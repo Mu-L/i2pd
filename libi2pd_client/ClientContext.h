@@ -22,6 +22,7 @@
 #include "BOB.h"
 #include "I2CP.h"
 #include "AddressBook.h"
+#include "I18N_langs.h"
 
 namespace i2p
 {
@@ -102,6 +103,10 @@ namespace client
 
 			std::vector<std::shared_ptr<DatagramSessionInfo> > GetForwardInfosFor(const i2p::data::IdentHash & destination);
 
+			// i18n
+			std::shared_ptr<const i2p::i18n::Locale> GetLanguage () { return m_Language; };
+			void SetLanguage (const std::shared_ptr<const i2p::i18n::Locale> language) { m_Language = language; };
+		
 		private:
 
 			void ReadTunnels ();
@@ -121,8 +126,7 @@ namespace client
 			void CleanupUDP(const boost::system::error_code & ecode);
 			void ScheduleCleanupUDP();
 
-			template<typename Visitor>
-			void VisitTunnels (Visitor v); // Visitor: (I2PService *) -> bool, true means retain
+			void VisitTunnels (bool clean);
 
 			void CreateNewSharedLocalDestination ();
 			void AddLocalDestination (std::shared_ptr<ClientDestination> localDestination);
@@ -150,6 +154,9 @@ namespace client
 
 			std::unique_ptr<boost::asio::deadline_timer> m_CleanupUDPTimer;
 
+			// i18n
+			std::shared_ptr<const i2p::i18n::Locale> m_Language;
+		
 		public:
 
 			// for HTTP

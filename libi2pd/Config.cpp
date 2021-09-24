@@ -213,7 +213,9 @@ namespace config {
 				"https://i2p.novg.net/"
 			),                                                            "Reseed URLs, separated by comma")
 			("reseed.yggurls", value<std::string>()->default_value(
-				"http://[324:9de3:fea4:f6ac::ace]:7070/"
+				"http://[324:71e:281a:9ed3::ace]:7070/,"
+			    "http://[301:65b9:c7cd:9a36::1]:18801/,"
+			    "http://[320:8936:ec1a:31f1::216]/"
 			),                                                            "Reseed URLs through the Yggdrasil, separated by comma")
 		;
 
@@ -285,7 +287,7 @@ namespace config {
 
 		options_description meshnets("Meshnet transports options");
 		meshnets.add_options()
-			("meshnets.yggdrasil", bool_switch()->default_value(false),              "Support transports through the Yggdrasil (deafult: false)")
+			("meshnets.yggdrasil", bool_switch()->default_value(false),              "Support transports through the Yggdrasil (default: false)")
 			("meshnets.yggaddress", value<std::string>()->default_value(""),         "Yggdrasil address to publish")
 		;
 

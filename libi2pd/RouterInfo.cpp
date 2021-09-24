@@ -343,7 +343,8 @@ namespace data
 						int numValid = 0;
 						for (auto& it: address->ssu->introducers)
 						{
-							if ((!it.iExp || ts <= it.iExp) && it.iPort > 0 && 
+							if (!it.iExp) it.iExp = m_Timestamp/1000 + NETDB_INTRODUCEE_EXPIRATION_TIMEOUT;
+							if (ts <= it.iExp && it.iPort > 0 && 
 							    ((it.iHost.is_v4 () && address->IsV4 ()) || (it.iHost.is_v6 () && address->IsV6 ()))) 
 								numValid++;
 							else
@@ -1154,18 +1155,17 @@ namespace data
 		return m_Profile;
 	}
 
-	void RouterInfo::Encrypt (const uint8_t * data, uint8_t * encrypted, BN_CTX * ctx) const
+	void RouterInfo::Encrypt (const uint8_t * data, uint8_t * encrypted) const
 	{
 		auto encryptor = m_RouterIdentity->CreateEncryptor (nullptr);
 		if (encryptor)
-			encryptor->Encrypt (data, encrypted, ctx, true);
+			encryptor->Encrypt (data, encrypted);
 	}
 
 	bool RouterInfo::IsEligibleFloodfill () const 
 	{
-		// floodfill must be reachable somehow, >= 0.9.28 and not DSA
-		return (IsReachable () || (m_SupportedTransports & eSSUV4)) && 
-			m_Version >= NETDB_MIN_FLOODFILL_VERSION &&
+		// floodfill must be reachable by ipv4, >= 0.9.38 and not DSA
+		return IsReachableBy (eNTCP2V4 | eSSUV4) && m_Version >= NETDB_MIN_FLOODFILL_VERSION &&
 			GetIdentity ()->GetSigningKeyType () != SIGNING_KEY_TYPE_DSA_SHA1; 
 	}	
 

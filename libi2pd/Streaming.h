@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2020, The PurpleI2P Project
+* Copyright (c) 2013-2021, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -11,7 +11,7 @@
 
 #include <inttypes.h>
 #include <string>
-#include <map>
+#include <unordered_map>
 #include <set>
 #include <queue>
 #include <functional>
@@ -152,7 +152,8 @@ namespace stream
 		eStreamStatusOpen,
 		eStreamStatusReset,
 		eStreamStatusClosing,
-		eStreamStatusClosed
+		eStreamStatusClosed,
+		eStreamStatusTerminated
 	};
 
 	class StreamingDestination;
@@ -260,7 +261,7 @@ namespace stream
 
 			typedef std::function<void (std::shared_ptr<Stream>)> Acceptor;
 
-			StreamingDestination (std::shared_ptr<i2p::client::ClientDestination> owner, uint16_t localPort = 0, bool gzip = true);
+			StreamingDestination (std::shared_ptr<i2p::client::ClientDestination> owner, uint16_t localPort = 0, bool gzip = false);
 			~StreamingDestination ();
 
 			void Start ();
@@ -297,12 +298,13 @@ namespace stream
 			uint16_t m_LocalPort;
 			bool m_Gzip; // gzip compression of data messages
 			std::mutex m_StreamsMutex;
-			std::map<uint32_t, std::shared_ptr<Stream> > m_Streams; // sendStreamID->stream
-			std::map<uint32_t, std::shared_ptr<Stream> > m_IncomingStreams; // receiveStreamID->stream
+			std::unordered_map<uint32_t, std::shared_ptr<Stream> > m_Streams; // sendStreamID->stream
+			std::unordered_map<uint32_t, std::shared_ptr<Stream> > m_IncomingStreams; // receiveStreamID->stream
+			std::shared_ptr<Stream> m_LastStream;
 			Acceptor m_Acceptor;
 			std::list<std::shared_ptr<Stream> > m_PendingIncomingStreams;
 			boost::asio::deadline_timer m_PendingIncomingTimer;
-			std::map<uint32_t, std::list<Packet *> > m_SavedPackets; // receiveStreamID->packets, arrived before SYN
+			std::unordered_map<uint32_t, std::list<Packet *> > m_SavedPackets; // receiveStreamID->packets, arrived before SYN
 
 			i2p::util::MemoryPool<Packet> m_PacketsPool;
 			i2p::util::MemoryPool<I2NPMessageBuffer<I2NP_MAX_MESSAGE_SIZE> > m_I2NPMsgsPool;
@@ -310,7 +312,7 @@ namespace stream
 		public:
 
 			i2p::data::GzipInflator m_Inflator;
-			i2p::data::GzipDeflator m_Deflator;
+			std::unique_ptr<i2p::data::GzipDeflator> m_Deflator;
 
 			// for HTTP only
 			const decltype(m_Streams)& GetStreams () const { return m_Streams; };

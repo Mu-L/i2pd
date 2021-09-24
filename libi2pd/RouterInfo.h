@@ -191,6 +191,7 @@ namespace data
 			void UpdateSupportedTransports ();
 			bool IsFloodfill () const { return m_Caps & Caps::eFloodfill; };
 			bool IsReachable () const { return m_Caps & Caps::eReachable; };
+			bool IsECIES () const { return m_RouterIdentity->GetCryptoKeyType () == i2p::data::CRYPTO_KEY_TYPE_ECIES_X25519_AEAD; };
 			bool IsSSU (bool v4only = true) const;
 			bool IsSSUV6 () const;
 			bool IsNTCP2 (bool v4only = true) const;
@@ -206,7 +207,7 @@ namespace data
 			void DisableMesh ();	
 			bool IsCompatible (const RouterInfo& other) const { return m_SupportedTransports & other.m_SupportedTransports; };	
 			bool IsReachableFrom (const RouterInfo& other) const { return m_ReachableTransports & other.m_SupportedTransports; };
-			bool IsReachableBy (SupportedTransports transport) const { return m_ReachableTransports & transport; };
+			bool IsReachableBy (uint8_t transports) const { return m_ReachableTransports & transports; };
 			bool HasValidAddresses () const { return m_SupportedTransports; };
 			bool IsHidden () const { return m_Caps & eHidden; };
 			bool IsHighBandwidth () const { return m_Caps & RouterInfo::eHighBandwidth; };
@@ -243,7 +244,7 @@ namespace data
 
 			// implements RoutingDestination
 			std::shared_ptr<const IdentityEx> GetIdentity () const { return m_RouterIdentity; };
-			void Encrypt (const uint8_t * data, uint8_t * encrypted, BN_CTX * ctx) const;
+			void Encrypt (const uint8_t * data, uint8_t * encrypted) const;
 
 			bool IsDestination () const { return false; };
 

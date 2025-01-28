@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2020, The PurpleI2P Project
+* Copyright (c) 2013-2024, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -27,6 +27,7 @@
 enum LogLevel
 {
 	eLogNone = 0,
+	eLogCritical,
 	eLogError,
 	eLogWarning,
 	eLogInfo,
@@ -52,7 +53,7 @@ namespace log {
 	{
 		private:
 
-			enum LogType  m_Destination;
+			enum LogType m_Destination;
 			enum LogLevel m_MinLevel;
 			std::shared_ptr<std::ostream> m_LogStream;
 			std::string m_Logfile;
@@ -75,7 +76,7 @@ namespace log {
 
 			/**
 			 * @brief Makes formatted string from unix timestamp
-			 * @param ts  Second since epoch
+			 * @param ts Second since epoch
 			 *
 			 * This function internally caches the result for last provided value
 			 */
@@ -86,52 +87,52 @@ namespace log {
 			Log ();
 			~Log ();
 
-			LogType  GetLogType  () { return m_Destination; };
-			LogLevel GetLogLevel () { return m_MinLevel; };
+			LogType GetLogType () const { return m_Destination; };
+			LogLevel GetLogLevel () const { return m_MinLevel; };
 
 			void Start ();
 			void Stop ();
 
 			/**
-			 * @brief  Sets minimal allowed level for log messages
-			 * @param  level  String with wanted minimal msg level
+			 * @brief Sets minimal allowed level for log messages
+			 * @param level String with wanted minimal msg level
 			 */
-			void     SetLogLevel (const std::string& level);
+			void SetLogLevel (const std::string& level);
 
 			/**
 			 * @brief Sets log destination to logfile
-			 * @param path  Path to logfile
+			 * @param path Path to logfile
 			 */
 			void SendTo (const std::string &path);
 
 			/**
 			 * @brief Sets log destination to given output stream
-			 * @param os  Output stream
+			 * @param os Output stream
 			 */
 			void SendTo (std::shared_ptr<std::ostream> os);
 
 			/**
-			 * @brief  Sets format for timestamps in log
-			 * @param  format  String with timestamp format
+			 * @brief Sets format for timestamps in log
+			 * @param format String with timestamp format
 			 */
 			void SetTimeFormat (std::string format) { m_TimeFormat = format; };
 
 	#ifndef _WIN32
 			/**
 			 * @brief Sets log destination to syslog
-			 * @param name     Wanted program name
+			 * @param name Wanted program name
 			 * @param facility Wanted log category
 			 */
 			void SendTo (const char *name, int facility);
 	#endif
 
 			/**
-			 * @brief  Format log message and write to output stream/syslog
-			 * @param  msg  Pointer to processed message
+			 * @brief Format log message and write to output stream/syslog
+			 * @param msg Pointer to processed message
 			 */
 			void Append(std::shared_ptr<i2p::log::LogMsg> &);
 
-			/** @brief  Reopen log file */
+			/** @brief Reopen log file */
 			void Reopen();
 	};
 
@@ -144,8 +145,8 @@ namespace log {
 	 */
 	struct LogMsg {
 		std::time_t timestamp;
-		std::string text; /**< message text as single string */
-		LogLevel level;   /**< message level */
+		std::string text;    /**< message text as single string */
+		LogLevel level;      /**< message level */
 		std::thread::id tid; /**< id of thread that generated message */
 
 		LogMsg (LogLevel lvl, std::time_t ts, std::string&& txt): timestamp(ts), text(std::move(txt)), level(lvl) {}
@@ -153,11 +154,16 @@ namespace log {
 
 	Log & Logger();
 
-	typedef std::function<void (const std::string&)>  ThrowFunction;
+	typedef std::function<void (const std::string&)> ThrowFunction;
 	ThrowFunction GetThrowFunction ();
 	void SetThrowFunction (ThrowFunction f);
 } // log
 } // i2p
+
+inline bool CheckLogLevel (LogLevel level) noexcept
+{
+	return level <= i2p::log::Logger().GetLogLevel ();
+}	
 
 /** internal usage only -- folding args array to single string */
 template<typename TValue>
@@ -165,16 +171,6 @@ void LogPrint (std::stringstream& s, TValue&& arg) noexcept
 {
 	s << std::forward<TValue>(arg);
 }
-
-#if (__cplusplus < 201703L) // below C++ 17
-/** internal usage only -- folding args array to single string */
-template<typename TValue, typename... TArgs>
-void LogPrint (std::stringstream& s, TValue&& arg, TArgs&&... args) noexcept
-{
-	LogPrint (s, std::forward<TValue>(arg));
-	LogPrint (s, std::forward<TArgs>(args)...);
-}
-#endif
 
 /**
  * @brief Create log message and send it to queue
@@ -184,22 +180,14 @@ void LogPrint (std::stringstream& s, TValue&& arg, TArgs&&... args) noexcept
 template<typename... TArgs>
 void LogPrint (LogLevel level, TArgs&&... args) noexcept
 {
-	i2p::log::Log &log = i2p::log::Logger();
-	if (level > log.GetLogLevel ())
-		return;
+	if (!CheckLogLevel (level)) return; 
 
 	// fold message to single string
 	std::stringstream ss;
-
-#if (__cplusplus >= 201703L) // C++ 17 or higher
 	(LogPrint (ss, std::forward<TArgs>(args)), ...);
-#else
-	LogPrint (ss, std::forward<TArgs>(args)...);
-#endif
-
 	auto msg = std::make_shared<i2p::log::LogMsg>(level, std::time(nullptr), std::move(ss).str());
 	msg->tid = std::this_thread::get_id();
-	log.Append(msg);
+	i2p::log::Logger().Append(msg);
 }
 
 /**
@@ -213,11 +201,7 @@ void ThrowFatal (TArgs&&... args) noexcept
 	if (!f) return;
 	// fold message to single string
 	std::stringstream ss("");
-#if (__cplusplus >= 201703L) // C++ 17 or higher
 	(LogPrint (ss, std::forward<TArgs>(args)), ...);
-#else
-	LogPrint (ss, std::forward<TArgs>(args)...);
-#endif
 	f (ss.str ());
 }
 

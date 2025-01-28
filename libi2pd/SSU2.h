@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2022, The PurpleI2P Project
+* Copyright (c) 2022-2025, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -9,113 +9,63 @@
 #ifndef SSU2_H__
 #define SSU2_H__
 
-#include <memory>
-#include <map>
 #include <unordered_map>
-#include <boost/asio.hpp>
-#include "Crypto.h"
-#include "RouterInfo.h"
-#include "TransportSession.h"
+#include <unordered_set>
+#include <vector>
+#include <list>
+#include <array>
+#include <mutex>
+#include <random>
+#include "util.h"
+#include "SSU2Session.h"
+#include "SSU2OutOfSession.h"
+#include "Socks5.h"
 
 namespace i2p
 {
 namespace transport
 {
-	const int SSU2_TERMINATION_TIMEOUT = 330; // 5.5 minutes
-	const size_t SSU2_SOCKET_RECEIVE_BUFFER_SIZE = 0x1FFFF; // 128K
-	const size_t SSU2_SOCKET_SEND_BUFFER_SIZE = 0x1FFFF; // 128K
-	const size_t SSU2_MTU = 1488;
-	
-	enum SSU2MessageType
-	{
-		eSSU2SessionRequest = 0,
-		eSSU2SessionCreated = 1
-	};
+	const int SSU2_TERMINATION_CHECK_TIMEOUT = 23; // in seconds
+	const int SSU2_TERMINATION_CHECK_TIMEOUT_VARIANCE = 5; // in seconds
+	const int SSU2_CLEANUP_INTERVAL = 72; // in seconds
+	const int SSU2_RESEND_CHECK_TIMEOUT = 40; // in milliseconds
+	const int SSU2_RESEND_CHECK_TIMEOUT_VARIANCE = 10; // in milliseconds
+	const int SSU2_RESEND_CHECK_MORE_TIMEOUT = 4; // in milliseconds
+	const int SSU2_RESEND_CHECK_MORE_TIMEOUT_VARIANCE = 9; // in milliseconds
+	const size_t SSU2_MAX_RESEND_PACKETS = 128; // packets to resend at the time
+	const uint64_t SSU2_SOCKET_MIN_BUFFER_SIZE = 128 * 1024;
+	const uint64_t SSU2_SOCKET_MAX_BUFFER_SIZE = 4 * 1024 * 1024;
+	const size_t SSU2_MAX_NUM_INTRODUCERS = 3;
+	const size_t SSU2_MIN_RECEIVED_PACKET_SIZE = 40; // 16 byte short header + 8 byte minimum payload + 16 byte MAC
+	const size_t SSU2_MAX_RECEIVED_QUEUE_SIZE = 2500; // in packets
+	const int SSU2_TO_INTRODUCER_SESSION_DURATION = 3600; // 1 hour
+	const int SSU2_TO_INTRODUCER_SESSION_EXPIRATION = 4800; // 80 minutes
+	const int SSU2_KEEP_ALIVE_INTERVAL = 15; // in seconds
+	const int SSU2_KEEP_ALIVE_INTERVAL_VARIANCE = 4; // in seconds
+	const int SSU2_PROXY_CONNECT_RETRY_TIMEOUT = 30; // in seconds
+	const int SSU2_MIN_HOLE_PUNCH_EXPIRATION = 30; // in seconds
+	const int SSU2_MAX_HOLE_PUNCH_EXPIRATION = 160; // in seconds
+	const size_t SSU2_MAX_NUM_PACKETS_PER_BATCH = 64;
 
-	enum SSU2BlockType
-	{
-		eSSU2BlkDateTime = 0,
-		eSSU2BlkOptions, // 1
-		eSSU2BlkRouterInfo, // 2
-		eSSU2BlkI2NPMessage, // 3
-		eSSU2BlkFirstFragment, // 4
-		eSSU2BlkFollowOnFragment, // 5
-		eSSU2BlkTermination, // 6
-		eSSU2BlkRelayRequest, // 7
-		eSSU2BlkRelayResponse, // 8
-		eSSU2BlkRelayIntro, // 9
-		eSSU2BlkPeerTest, // 10
-		eSSU2BlkNextNonce, // 11
-		eSSU2BlkAck, // 12
-		eSSU2BlkAddress, // 13
-		eSSU2BlkIntroKey, // 14
-		eSSU2BlkRelayTagRequest, // 15
-		eSSU2BlkRelayTag, // 16
-		eSSU2BlkNewToken, // 17
-		eSSU2BlkPathChallenge, // 18
-		eSSU2BlkPathResponse, // 19
-		eSSU2BlkFirstPacketNumber, // 20
-		eSSU2BlkPadding = 254
-	};
-	
-	class SSU2Server;
-	class SSU2Session: public TransportSession, public std::enable_shared_from_this<SSU2Session>
-	{
-		union Header
-		{
-			uint64_t ll[2];
-			uint8_t buf[16];
-			struct
-			{
-				uint64_t connID;
-				uint8_t packetNum[4];
-				uint8_t type;
-				uint8_t flags[3];
-			} h;
-		};
-	
-		public:
-
-			SSU2Session (SSU2Server& server, std::shared_ptr<const i2p::data::RouterInfo> in_RemoteRouter = nullptr,
-				std::shared_ptr<const i2p::data::RouterInfo::Address> addr = nullptr, bool peerTest = false);
-			~SSU2Session ();
-
-			void SetRemoteEndpoint (const boost::asio::ip::udp::endpoint& ep) { m_RemoteEndpoint = ep; };
-			
-			void Done () override {};
-			void SendI2NPMessages (const std::vector<std::shared_ptr<I2NPMessage> >& msgs) override {};
-			
-			void ProcessSessionRequest (uint64_t connID, uint8_t * buf, size_t len);
-			bool ProcessSessionCreated (uint8_t * buf, size_t len);
-			
-		private:
-
-			void SendSessionRequest ();
-			void SendSessionCreated (const uint8_t * X);
-
-			void HandlePayload (const uint8_t * buf, size_t len);
-			bool ExtractEndpoint (const uint8_t * buf, size_t size, boost::asio::ip::udp::endpoint& ep);
-			size_t CreateAddressBlock (const boost::asio::ip::udp::endpoint& ep, uint8_t * buf, size_t len);
-			
-		private:
-
-			SSU2Server& m_Server;
-			std::shared_ptr<i2p::crypto::X25519Keys> m_EphemeralKeys;
-			std::unique_ptr<i2p::crypto::NoiseSymmetricState> m_NoiseState;
-			std::shared_ptr<const i2p::data::RouterInfo::Address> m_Address;
-			boost::asio::ip::udp::endpoint m_RemoteEndpoint;
-			uint64_t m_DestConnID, m_SourceConnID;
-	};
-
-	class SSU2Server:  private i2p::util::RunnableServiceWithWork
+	class SSU2Server: private i2p::util::RunnableServiceWithWork
 	{
 		struct Packet
 		{
-			uint8_t buf[SSU2_MTU]; 
+			uint8_t buf[SSU2_MAX_PACKET_SIZE];
 			size_t len;
 			boost::asio::ip::udp::endpoint from;
-		};	
-		
+		};
+	
+		class ReceiveService: public i2p::util::RunnableService
+		{
+			public:
+
+				ReceiveService (const std::string& name): RunnableService (name) {};
+				auto& GetService () { return GetIOService (); };
+				void Start () { StartIOService (); };
+				void Stop () { StopIOService (); };
+		};
+
 		public:
 
 			SSU2Server ();
@@ -123,28 +73,155 @@ namespace transport
 
 			void Start ();
 			void Stop ();
-			boost::asio::io_service& GetService () { return GetIOService (); };
-			
-			void AddSession (uint64_t connID, std::shared_ptr<SSU2Session> session);
-			void AddPendingOutgoingSession (const boost::asio::ip::udp::endpoint& ep, std::shared_ptr<SSU2Session> session);
+			auto& GetService () { return GetIOService (); };
+			void SetLocalAddress (const boost::asio::ip::address& localAddress);
+			bool SetProxy (const std::string& address, uint16_t port);
+			bool UsesProxy () const { return m_IsThroughProxy; };
+			bool IsSupported (const boost::asio::ip::address& addr) const;
+			uint16_t GetPort (bool v4) const;
+			bool IsConnectedRecently (const boost::asio::ip::udp::endpoint& ep, bool max = true);
+			void AddConnectedRecently (const boost::asio::ip::udp::endpoint& ep, uint64_t ts);
+			std::mt19937& GetRng () { return m_Rng; }
+			bool AEADChaCha20Poly1305Encrypt (const uint8_t * msg, size_t msgLen, const uint8_t * ad, size_t adLen,
+				const uint8_t * key, const uint8_t * nonce, uint8_t * buf, size_t len); 
+			bool AEADChaCha20Poly1305Decrypt (const uint8_t * msg, size_t msgLen, const uint8_t * ad, size_t adLen,
+				const uint8_t * key, const uint8_t * nonce, uint8_t * buf, size_t len); 
+			void ChaCha20 (const uint8_t * msg, size_t msgLen, const uint8_t * key, const uint8_t * nonce, uint8_t * out);
+			bool IsMaxNumIntroducers (bool v4) const { return (v4 ? m_Introducers.size () : m_IntroducersV6.size ()) >= SSU2_MAX_NUM_INTRODUCERS; }
+			bool IsSyncClockFromPeers () const { return m_IsSyncClockFromPeers; };
+			void AdjustTimeOffset (int64_t offset, std::shared_ptr<const i2p::data::IdentityEx> from);
 
-			void Send (const uint8_t * header, size_t headerLen, const uint8_t * headerX, size_t headerXLen, 
+			bool AddSession (std::shared_ptr<SSU2Session> session);
+			void RemoveSession (uint64_t connID);
+			void RequestRemoveSession (uint64_t connID);
+			void AddSessionByRouterHash (std::shared_ptr<SSU2Session> session);
+			bool AddPendingOutgoingSession (std::shared_ptr<SSU2Session> session);
+			void RemovePendingOutgoingSession (const boost::asio::ip::udp::endpoint& ep);
+			std::shared_ptr<SSU2Session> FindSession (const i2p::data::IdentHash& ident);
+			std::shared_ptr<SSU2Session> FindPendingOutgoingSession (const boost::asio::ip::udp::endpoint& ep) const;
+			std::shared_ptr<SSU2Session> GetRandomPeerTestSession (i2p::data::RouterInfo::CompatibleTransports remoteTransports,
+				const i2p::data::IdentHash& excluded);
+
+			void AddRelay (uint32_t tag, std::shared_ptr<SSU2Session> relay);
+			void RemoveRelay (uint32_t tag);
+			std::shared_ptr<SSU2Session> FindRelaySession (uint32_t tag);
+
+			bool AddPeerTest (uint32_t nonce, std::shared_ptr<SSU2Session> aliceSession, uint64_t ts); 
+			std::shared_ptr<SSU2Session> GetPeerTest (uint32_t nonce);	
+		
+			bool AddRequestedPeerTest (uint32_t nonce, std::shared_ptr<SSU2PeerTestSession> session, uint64_t ts);
+			std::shared_ptr<SSU2PeerTestSession> GetRequestedPeerTest (uint32_t nonce);		
+		
+			void Send (const uint8_t * header, size_t headerLen, const uint8_t * payload, size_t payloadLen,
+				const boost::asio::ip::udp::endpoint& to);
+			void Send (const uint8_t * header, size_t headerLen, const uint8_t * headerX, size_t headerXLen,
 				const uint8_t * payload, size_t payloadLen, const boost::asio::ip::udp::endpoint& to);
-			
+
+			bool CreateSession (std::shared_ptr<const i2p::data::RouterInfo> router,
+				std::shared_ptr<const i2p::data::RouterInfo::Address> address, bool peerTest = false);
+			bool StartPeerTest (std::shared_ptr<const i2p::data::RouterInfo> router, bool v4);
+
+			void UpdateOutgoingToken (const boost::asio::ip::udp::endpoint& ep, uint64_t token, uint32_t exp);
+			uint64_t FindOutgoingToken (const boost::asio::ip::udp::endpoint& ep);
+			uint64_t GetIncomingToken (const boost::asio::ip::udp::endpoint& ep);
+			std::pair<uint64_t, uint32_t> NewIncomingToken (const boost::asio::ip::udp::endpoint& ep);
+
+			void RescheduleIntroducersUpdateTimer ();
+			void RescheduleIntroducersUpdateTimerV6 ();
+
+			i2p::util::MemoryPool<SSU2SentPacket>& GetSentPacketsPool () { return m_SentPacketsPool; };
+			i2p::util::MemoryPool<SSU2IncompleteMessage>& GetIncompleteMessagesPool () { return m_IncompleteMessagesPool; };
+			i2p::util::MemoryPool<SSU2IncompleteMessage::Fragment>& GetFragmentsPool () { return m_FragmentsPool; };
+
 		private:
 
-			void OpenSocket (int port);
-			void Receive ();
-			void HandleReceivedFrom (const boost::system::error_code& ecode, size_t bytes_transferred, Packet * packet);
+			boost::asio::ip::udp::socket& OpenSocket (const boost::asio::ip::udp::endpoint& localEndpoint);
+			void Receive (boost::asio::ip::udp::socket& socket);
+			void HandleReceivedFrom (const boost::system::error_code& ecode, size_t bytes_transferred,
+				Packet * packet, boost::asio::ip::udp::socket& socket);
+			void HandleReceivedPackets (std::list<Packet *>&& packets);
 			void ProcessNextPacket (uint8_t * buf, size_t len, const boost::asio::ip::udp::endpoint& senderEndpoint);
-			
+			void InsertToReceivedPacketsQueue (Packet * packet);
+			void InsertToReceivedPacketsQueue (std::list<Packet *>& packets);
+			void HandleReceivedPacketsQueue ();
+		
+			void ScheduleTermination ();
+			void HandleTerminationTimer (const boost::system::error_code& ecode);
+
+			void ScheduleCleanup ();
+			void HandleCleanupTimer (const boost::system::error_code& ecode);
+
+			void ScheduleResend (bool more);
+			void HandleResendTimer (const boost::system::error_code& ecode);
+
+			bool CheckPendingOutgoingSession (const boost::asio::ip::udp::endpoint& ep, bool peerTest);
+			void ConnectThroughIntroducer (std::shared_ptr<SSU2Session> session);
+			std::vector<std::shared_ptr<SSU2Session> > FindIntroducers (int maxNumIntroducers,
+				bool v4, const std::unordered_set<i2p::data::IdentHash>& excluded);
+			void UpdateIntroducers (bool v4);
+			void ScheduleIntroducersUpdateTimer ();
+			void HandleIntroducersUpdateTimer (const boost::system::error_code& ecode, bool v4);
+			void ScheduleIntroducersUpdateTimerV6 ();
+
+			void SendThroughProxy (const uint8_t * header, size_t headerLen, const uint8_t * headerX, size_t headerXLen,
+				const uint8_t * payload, size_t payloadLen, const boost::asio::ip::udp::endpoint& to);
+			void ProcessNextPacketFromProxy (uint8_t * buf, size_t len);
+			void ConnectToProxy ();
+			void ReconnectToProxy ();
+			void HandshakeWithProxy ();
+			void ReadHandshakeWithProxyReply ();
+			void SendUDPAssociateRequest ();
+			void ReadUDPAssociateReply ();
+			void ReadUDPAssociateSocket (); // handle if closed by peer
+
 		private:
 
-			boost::asio::ip::udp::socket m_Socket;
+			ReceiveService m_ReceiveService;
+			boost::asio::ip::udp::socket m_SocketV4, m_SocketV6;
+			boost::asio::ip::address m_AddressV4, m_AddressV6;
 			std::unordered_map<uint64_t, std::shared_ptr<SSU2Session> > m_Sessions;
+			std::unordered_map<i2p::data::IdentHash, std::weak_ptr<SSU2Session> > m_SessionsByRouterHash;
+			mutable std::mutex m_SessionsByRouterHashMutex;
 			std::map<boost::asio::ip::udp::endpoint, std::shared_ptr<SSU2Session> > m_PendingOutgoingSessions;
+			mutable std::mutex m_PendingOutgoingSessionsMutex;
+			std::map<boost::asio::ip::udp::endpoint, std::pair<uint64_t, uint32_t> > m_IncomingTokens, m_OutgoingTokens; // remote endpoint -> (token, expires in seconds)
+			std::unordered_map<uint32_t, std::weak_ptr<SSU2Session> > m_Relays; // we are introducer, relay tag -> session
+			std::unordered_map<uint32_t, std::pair <std::weak_ptr<SSU2Session>, uint64_t > > m_PeerTests; // nonce->(Alice, timestamp). We are Bob
+			std::list<std::pair<i2p::data::IdentHash, uint32_t> > m_Introducers, m_IntroducersV6; // introducers we are connected to
 			i2p::util::MemoryPoolMt<Packet> m_PacketsPool;
-	};	
+			i2p::util::MemoryPool<SSU2SentPacket> m_SentPacketsPool;
+			i2p::util::MemoryPool<SSU2IncompleteMessage> m_IncompleteMessagesPool;
+			i2p::util::MemoryPool<SSU2IncompleteMessage::Fragment> m_FragmentsPool;
+			boost::asio::deadline_timer m_TerminationTimer, m_CleanupTimer, m_ResendTimer,
+				m_IntroducersUpdateTimer, m_IntroducersUpdateTimerV6;
+			std::shared_ptr<SSU2Session> m_LastSession;
+			bool m_IsPublished; // if we maintain introducers
+			bool m_IsSyncClockFromPeers;
+			int64_t m_PendingTimeOffset; // during peer test
+			std::shared_ptr<const i2p::data::IdentityEx> m_PendingTimeOffsetFrom;
+			std::mt19937 m_Rng;
+			std::map<boost::asio::ip::udp::endpoint, uint64_t> m_ConnectedRecently; // endpoint -> last activity time in seconds
+			mutable std::mutex m_ConnectedRecentlyMutex;
+			std::unordered_map<uint32_t, std::pair <std::weak_ptr<SSU2PeerTestSession>, uint64_t > > m_RequestedPeerTests; // nonce->(Alice, timestamp) 
+			std::list<Packet *> m_ReceivedPacketsQueue;
+			mutable std::mutex m_ReceivedPacketsQueueMutex;
+			i2p::crypto::AEADChaCha20Poly1305Encryptor m_Encryptor;
+			i2p::crypto::AEADChaCha20Poly1305Decryptor m_Decryptor;
+			i2p::crypto::ChaCha20Context m_ChaCha20;
+		
+			// proxy
+			bool m_IsThroughProxy;
+			uint8_t m_UDPRequestHeader[SOCKS5_UDP_IPV6_REQUEST_HEADER_SIZE];
+			std::unique_ptr<boost::asio::ip::tcp::endpoint> m_ProxyEndpoint;
+			std::unique_ptr<boost::asio::ip::tcp::socket> m_UDPAssociateSocket;
+			std::unique_ptr<boost::asio::ip::udp::endpoint> m_ProxyRelayEndpoint;
+			std::unique_ptr<boost::asio::deadline_timer> m_ProxyConnectRetryTimer;
+
+		public:
+
+			// for HTTP/I2PControl
+			const decltype(m_Sessions)& GetSSU2Sessions () const { return m_Sessions; };
+	};
 }
 }
 

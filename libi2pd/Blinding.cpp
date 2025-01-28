@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2021, The PurpleI2P Project
+* Copyright (c) 2013-2025, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -99,7 +99,7 @@ namespace data
 	static size_t BlindECDSA (i2p::data::SigningKeyType sigType, const uint8_t * key, const uint8_t * seed, Fn blind, Args&&...args)
 	// blind is BlindEncodedPublicKeyECDSA or BlindEncodedPrivateKeyECDSA
 	{
-		size_t publicKeyLength  = 0;
+		size_t publicKeyLength = 0;
 		EC_GROUP * group = nullptr;
 		switch (sigType)
 		{
@@ -135,7 +135,7 @@ namespace data
 //----------------------------------------------------------
 
 	const uint8_t B33_TWO_BYTES_SIGTYPE_FLAG = 0x01;
-	const uint8_t B33_PER_SECRET_FLAG = 0x02; // not used for now
+	// const uint8_t B33_PER_SECRET_FLAG = 0x02; // not used for now
 	const uint8_t B33_PER_CLIENT_AUTH_FLAG = 0x04;
 
 	BlindedPublicKey::BlindedPublicKey (std::shared_ptr<const IdentityEx> identity, bool clientAuth):
@@ -146,14 +146,17 @@ namespace data
 		m_PublicKey.resize (len);
 		memcpy (m_PublicKey.data (), identity->GetSigningPublicKeyBuffer (), len);
 		m_SigType = identity->GetSigningKeyType ();
-		m_BlindedSigType = m_SigType;
+		if (m_SigType == i2p::data::SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519)
+			m_BlindedSigType = i2p::data::SIGNING_KEY_TYPE_REDDSA_SHA512_ED25519; // 7 -> 11
+		else
+			m_BlindedSigType = m_SigType;
 	}
 
-	BlindedPublicKey::BlindedPublicKey (const std::string& b33):
+	BlindedPublicKey::BlindedPublicKey (std::string_view b33):
 		m_SigType (0) // 0 means invalid, we can't blind DSA, set it later
 	{
 		uint8_t addr[40]; // TODO: define length from b33
-		size_t l = i2p::data::Base32ToByteStream (b33.c_str (), b33.length (), addr, 40);
+		size_t l = i2p::data::Base32ToByteStream (b33.data (), b33.length (), addr, 40);
 		if (l < 32)
 		{
 			LogPrint (eLogError, "Blinding: Malformed b33 ", b33);

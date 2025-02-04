@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2020, The PurpleI2P Project
+* Copyright (c) 2013-2025, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -11,10 +11,12 @@
 
 #include <string.h>
 #include <string>
+#include <string_view>
 #include <map>
 #include <vector>
 #include <iostream>
 #include <mutex>
+#include <future>
 #include <memory>
 #include <boost/asio.hpp>
 #include "Base.h"
@@ -32,7 +34,9 @@ namespace client
 	const int CONTINIOUS_SUBSCRIPTION_UPDATE_TIMEOUT = 720; // in minutes (12 hours)
 	const int CONTINIOUS_SUBSCRIPTION_RETRY_TIMEOUT = 5; // in minutes
 	const int CONTINIOUS_SUBSCRIPTION_MAX_NUM_RETRIES = 10; // then update timeout
-	const int SUBSCRIPTION_REQUEST_TIMEOUT = 120; //in second
+	const int SUBSCRIPTION_REQUEST_TIMEOUT = 120; //in seconds
+	const int ADDRESS_CACHE_EXPIRATION_TIMEOUT = 710; // in seconds
+	const int ADDRESS_CACHE_UPDATE_INTERVAL = 76; // in seconds
 
 	const uint16_t ADDRESS_RESOLVER_DATAGRAM_PORT = 53;
 	const uint16_t ADDRESS_RESPONSE_DATAGRAM_PORT = 54;
@@ -45,7 +49,7 @@ namespace client
 		i2p::data::IdentHash identHash;
 		std::shared_ptr<i2p::data::BlindedPublicKey> blindedPublicKey;
 
-		Address (const std::string& b32);
+		Address (std::string_view b32);
 		Address (const i2p::data::IdentHash& hash);
 		bool IsIdentHash () const { return addressType == eAddressIndentHash; };
 		bool IsValid () const { return addressType != eAddressInvalid; };
@@ -57,15 +61,18 @@ namespace client
 	{
 		public:
 
+			typedef std::map<std::string, std::shared_ptr<Address>, std::less<> > Addresses;
+			
 			virtual ~AddressBookStorage () {};
-			virtual std::shared_ptr<const i2p::data::IdentityEx> GetAddress (const i2p::data::IdentHash& ident) const = 0;
+			virtual std::shared_ptr<const i2p::data::IdentityEx> GetAddress (const i2p::data::IdentHash& ident) = 0;
 			virtual void AddAddress (std::shared_ptr<const i2p::data::IdentityEx> address) = 0;
 			virtual void RemoveAddress (const i2p::data::IdentHash& ident) = 0;
+			virtual void CleanUpCache () = 0;
 
 			virtual bool Init () = 0;
-			virtual int Load (std::map<std::string, std::shared_ptr<Address> >& addresses) = 0;
-			virtual int LoadLocal (std::map<std::string, std::shared_ptr<Address> >& addresses) = 0;
-			virtual int Save (const std::map<std::string, std::shared_ptr<Address> >& addresses) = 0;
+			virtual int Load (Addresses& addresses) = 0;
+			virtual int LoadLocal (Addresses& addresses) = 0;
+			virtual int Save (const Addresses& addresses) = 0;
 
 			virtual void SaveEtag (const i2p::data::IdentHash& subscription, const std::string& etag, const std::string& lastModified) = 0;
 			virtual bool GetEtag (const i2p::data::IdentHash& subscription, std::string& etag, std::string& lastModified) = 0;
@@ -77,18 +84,20 @@ namespace client
 	class AddressBook
 	{
 		public:
-
+			
 			AddressBook ();
 			~AddressBook ();
 			void Start ();
 			void StartResolvers ();
 			void Stop ();
-			std::shared_ptr<const Address> GetAddress (const std::string& address);
+			std::shared_ptr<const Address> GetAddress (std::string_view address);
 			std::shared_ptr<const i2p::data::IdentityEx> GetFullAddress (const std::string& address);
-			std::shared_ptr<const Address> FindAddress (const std::string& address);
-			void LookupAddress (const std::string& address);
+			std::shared_ptr<const Address> FindAddress (std::string_view address);
+			void LookupAddress (std::string_view address);
 			void InsertAddress (const std::string& address, const std::string& jump); // for jump links
 			void InsertFullAddress (std::shared_ptr<const i2p::data::IdentityEx> address);
+
+			bool RecordExists (const std::string& address, const std::string& jump);
 
 			bool LoadHostsFromStream (std::istream& f, bool is_update);
 			void DownloadComplete (bool success, const i2p::data::IdentHash& subscription, const std::string& etag, const std::string& lastModified);
@@ -97,7 +106,8 @@ namespace client
 			std::string ToAddress(std::shared_ptr<const i2p::data::IdentityEx> ident) { return ToAddress(ident->GetIdentHash ()); }
 
 			bool GetEtag (const i2p::data::IdentHash& subscription, std::string& etag, std::string& lastModified);
-
+			bool IsEnabled () const { return m_IsEnabled; }
+			
 		private:
 
 			void StartSubscriptions ();
@@ -113,26 +123,30 @@ namespace client
 			void StopLookups ();
 			void HandleLookupResponse (const i2p::data::IdentityEx& from, uint16_t fromPort, uint16_t toPort, const uint8_t * buf, size_t len);
 
+			void ScheduleCacheUpdate ();
+			
 		private:
 
 			std::mutex m_AddressBookMutex;
-			std::map<std::string, std::shared_ptr<Address> >  m_Addresses;
+			AddressBookStorage::Addresses m_Addresses;
 			std::map<i2p::data::IdentHash, std::shared_ptr<AddressResolver> > m_Resolvers; // local destination->resolver
 			std::mutex m_LookupsMutex;
 			std::map<uint32_t, std::string> m_Lookups; // nonce -> address
 			AddressBookStorage * m_Storage;
-			volatile bool m_IsLoaded, m_IsDownloading;
+			volatile bool m_IsLoaded;
+			std::future<void> m_Downloading;
 			int m_NumRetries;
 			std::vector<std::shared_ptr<AddressBookSubscription> > m_Subscriptions;
 			std::shared_ptr<AddressBookSubscription> m_DefaultSubscription; // in case if we don't know any addresses yet
-			boost::asio::deadline_timer * m_SubscriptionsUpdateTimer;
+			std::unique_ptr<boost::asio::deadline_timer> m_SubscriptionsUpdateTimer, m_AddressCacheUpdateTimer;
+			bool m_IsEnabled;
 	};
 
 	class AddressBookSubscription
 	{
 		public:
 
-			AddressBookSubscription (AddressBook& book, const std::string& link);
+			AddressBookSubscription (AddressBook& book, std::string_view link);
 			void CheckUpdates ();
 
 		private:
@@ -162,7 +176,7 @@ namespace client
 		private:
 
 			std::shared_ptr<ClientDestination> m_LocalDestination;
-			std::map<std::string, i2p::data::IdentHash>  m_LocalAddresses;
+			std::map<std::string, i2p::data::IdentHash> m_LocalAddresses;
 	};
 }
 }

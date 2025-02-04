@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2022, The PurpleI2P Project
+* Copyright (c) 2013-2025, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -11,9 +11,12 @@
 
 #include <inttypes.h>
 #include <string>
+#include <string_view>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <map>
+#include <unordered_map>
 #include <boost/asio.hpp>
 #include "util.h"
 #include "Destination.h"
@@ -28,6 +31,7 @@ namespace client
 	const size_t I2CP_MAX_MESSAGE_LENGTH = 65535;
 	const size_t I2CP_MAX_SEND_QUEUE_SIZE = 1024*1024; // in bytes, 1M
 	const int I2CP_LEASESET_CREATION_TIMEOUT = 10; // in seconds
+	const int I2CP_SESSION_ACK_REQUEST_INTERVAL = 12100; // in milliseconds
 
 	const size_t I2CP_HEADER_LENGTH_OFFSET = 0;
 	const size_t I2CP_HEADER_TYPE_OFFSET = I2CP_HEADER_LENGTH_OFFSET + 4;
@@ -58,6 +62,7 @@ namespace client
 		eI2CPMessageStatusAccepted = 1,
 		eI2CPMessageStatusGuaranteedSuccess = 4,
 		eI2CPMessageStatusGuaranteedFailure = 5,
+		eI2CPMessageStatusNoLocalTunnels = 16,
 		eI2CPMessageStatusNoLeaseSet = 21
 	};
 
@@ -69,7 +74,7 @@ namespace client
 		eI2CPSessionStatusInvalid = 3,
 		eI2CPSessionStatusRefused = 4
 	};
-	
+
 	// params
 	const char I2CP_PARAM_MESSAGE_RELIABILITY[] = "i2cp.messageReliability";
 
@@ -78,8 +83,9 @@ namespace client
 	{
 		public:
 
-			I2CPDestination (boost::asio::io_service& service, std::shared_ptr<I2CPSession> owner,
-				std::shared_ptr<const i2p::data::IdentityEx> identity, bool isPublic, const std::map<std::string, std::string>& params);
+			I2CPDestination (boost::asio::io_context& service, std::shared_ptr<I2CPSession> owner,
+				std::shared_ptr<const i2p::data::IdentityEx> identity, bool isPublic, bool isSameThread, 
+			    const std::map<std::string, std::string>& params);
 			~I2CPDestination () {};
 
 			void Stop ();
@@ -90,7 +96,8 @@ namespace client
 			void LeaseSetCreated (const uint8_t * buf, size_t len); // called from I2CPSession
 			void LeaseSet2Created (uint8_t storeType, const uint8_t * buf, size_t len); // called from I2CPSession
 			void SendMsgTo (const uint8_t * payload, size_t len, const i2p::data::IdentHash& ident, uint32_t nonce); // called from I2CPSession
-
+			bool SendMsg (const uint8_t * payload, size_t len, std::shared_ptr<i2p::garlic::GarlicRoutingSession> remoteSession, uint32_t nonce);
+			
 			// implements LocalDestination
 			bool Decrypt (const uint8_t * encrypted, uint8_t * data, i2p::data::CryptoKeyType preferredCrypto) const;
 			bool SupportsEncryptionType (i2p::data::CryptoKeyType keyType) const;
@@ -99,6 +106,7 @@ namespace client
 
 		protected:
 
+			void CleanupDestination ();
 			// I2CP
 			void HandleDataMessage (const uint8_t * buf, size_t len);
 			void CreateNewLeaseSet (const std::vector<std::shared_ptr<i2p::tunnel::InboundTunnel> >& tunnels);
@@ -108,7 +116,9 @@ namespace client
 			std::shared_ptr<I2CPDestination> GetSharedFromThis ()
 			{ return std::static_pointer_cast<I2CPDestination>(shared_from_this ()); }
 			bool SendMsg (std::shared_ptr<I2NPMessage> msg, std::shared_ptr<const i2p::data::LeaseSet> remote);
-
+			bool SendMsg (std::shared_ptr<I2NPMessage> garlic, 
+				std::shared_ptr<i2p::tunnel::OutboundTunnel> outboundTunnel, std::shared_ptr<const i2p::data::Lease> remoteLease);
+			
 			void PostCreateNewLeaseSet (std::vector<std::shared_ptr<i2p::tunnel::InboundTunnel> > tunnels);
 
 		private:
@@ -120,7 +130,7 @@ namespace client
 			std::shared_ptr<i2p::crypto::ECIESX25519AEADRatchetDecryptor> m_ECIESx25519Decryptor;
 			uint8_t m_ECIESx25519PrivateKey[32];
 			uint64_t m_LeaseSetExpirationTime;
-			bool m_IsCreatingLeaseSet;
+			bool m_IsCreatingLeaseSet, m_IsSameThread;
 			boost::asio::deadline_timer m_LeaseSetCreationTimer;
 			i2p::util::MemoryPoolMt<I2NPMessageBuffer<I2NP_MAX_MESSAGE_SIZE> > m_I2NPMsgsPool;
 	};
@@ -155,6 +165,8 @@ namespace client
 			void SendI2CPMessage (uint8_t type, const uint8_t * payload, size_t len);
 			void SendMessagePayloadMessage (const uint8_t * payload, size_t len);
 			void SendMessageStatusMessage (uint32_t nonce, I2CPMessageStatus status);
+			void AddRoutingSession (const i2p::data::IdentHash& signingKey, std::shared_ptr<i2p::garlic::GarlicRoutingSession> remoteSession);
+			void CleanupRoutingSessions ();
 
 			// message handlers
 			void GetDateMessageHandler (const uint8_t * buf, size_t len);
@@ -181,12 +193,12 @@ namespace client
 
 			void HandleI2CPMessageSent (const boost::system::error_code& ecode, std::size_t bytes_transferred);
 
-			std::string ExtractString (const uint8_t * buf, size_t len);
-			size_t PutString (uint8_t * buf, size_t len, const std::string& str);
+			std::string_view ExtractString (const uint8_t * buf, size_t len);
+			size_t PutString (uint8_t * buf, size_t len, std::string_view str);
 			void ExtractMapping (const uint8_t * buf, size_t len, std::map<std::string, std::string>& mapping);
 			void SendSessionStatusMessage (I2CPSessionStatus status);
 			void SendHostReplyMessage (uint32_t requestID, std::shared_ptr<const i2p::data::IdentityEx> identity);
-
+			
 		private:
 
 			I2CPServer& m_Owner;
@@ -195,6 +207,8 @@ namespace client
 			size_t m_PayloadLen;
 
 			std::shared_ptr<I2CPDestination> m_Destination;
+			std::mutex m_RoutingSessionsMutex;
+			std::unordered_map<i2p::data::IdentHash, std::shared_ptr<i2p::garlic::GarlicRoutingSession> > m_RoutingSessions; // signing key->session
 			uint16_t m_SessionID;
 			uint32_t m_MessageID;
 			bool m_IsSendAccepted;
@@ -210,12 +224,12 @@ namespace client
 	{
 		public:
 
-			I2CPServer (const std::string& interface, int port, bool isSingleThread);
+			I2CPServer (const std::string& interface, uint16_t port, bool isSingleThread);
 			~I2CPServer ();
 
 			void Start ();
 			void Stop ();
-			boost::asio::io_service& GetService () { return GetIOService (); };
+			auto& GetService () { return GetIOService (); };
 			bool IsSingleThread () const { return m_IsSingleThread; };
 
 			bool InsertSession (std::shared_ptr<I2CPSession> session);
@@ -223,8 +237,6 @@ namespace client
 			std::shared_ptr<I2CPSession> FindSessionByIdentHash (const i2p::data::IdentHash& ident) const;
 
 		private:
-
-			void Run ();
 
 			void Accept ();
 

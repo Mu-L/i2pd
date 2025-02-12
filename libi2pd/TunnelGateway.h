@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2021, The PurpleI2P Project
+* Copyright (c) 2013-2024, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -45,18 +45,20 @@ namespace tunnel
 	{
 		public:
 
-			TunnelGateway (TunnelBase * tunnel):
+			TunnelGateway (TunnelBase& tunnel):
 				m_Tunnel (tunnel), m_NumSentBytes (0) {};
 			void SendTunnelDataMsg (const TunnelMessageBlock& block);
 			void PutTunnelDataMsg (const TunnelMessageBlock& block);
 			void SendBuffer ();
 			size_t GetNumSentBytes () const { return m_NumSentBytes; };
+			const std::unique_ptr<TunnelTransportSender>& GetSender () const { return m_Sender; };
 
 		private:
 
-			TunnelBase * m_Tunnel;
+			TunnelBase& m_Tunnel;
 			TunnelGatewayBuffer m_Buffer;
 			size_t m_NumSentBytes;
+			std::unique_ptr<TunnelTransportSender> m_Sender;
 	};
 }
 }

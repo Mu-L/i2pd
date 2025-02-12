@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2020, The PurpleI2P Project
+* Copyright (c) 2013-2024, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -11,12 +11,19 @@
 
 #include <inttypes.h>
 #include <memory>
+#include <future>
+#include <list>
 #include "Timestamp.h"
 #include "I2NPProtocol.h"
 #include "Identity.h"
 
 namespace i2p
 {
+namespace transport
+{
+	class TransportSession;
+}	
+	
 namespace tunnel
 {
 	const size_t TUNNEL_DATA_MSG_SIZE = 1028;
@@ -41,7 +48,7 @@ namespace tunnel
 	{
 		public:
 
-			TunnelBase (uint32_t tunnelID, uint32_t nextTunnelID, i2p::data::IdentHash nextIdent):
+			TunnelBase (uint32_t tunnelID, uint32_t nextTunnelID, const i2p::data::IdentHash& nextIdent):
 				m_TunnelID (tunnelID), m_NextTunnelID (nextTunnelID), m_NextIdent (nextIdent),
 				m_CreationTime (i2p::util::GetSecondsSinceEpoch ()) {};
 			virtual ~TunnelBase () {};
@@ -76,6 +83,25 @@ namespace tunnel
 				return t1 < t2;
 		}
 	};
+
+	class TunnelTransportSender final
+	{
+		public: 
+
+			TunnelTransportSender () = default;
+			~TunnelTransportSender () = default;
+
+			void SendMessagesTo (const i2p::data::IdentHash& to, std::list<std::shared_ptr<I2NPMessage> >&& msgs);
+			void SendMessagesTo (const i2p::data::IdentHash& to, std::list<std::shared_ptr<I2NPMessage> >& msgs); // send and clear
+
+			std::shared_ptr<const i2p::transport::TransportSession> GetCurrentTransport () const { return m_CurrentTransport.lock (); }
+			void Reset ();
+			
+		private:
+			
+			std::weak_ptr<i2p::transport::TransportSession> m_CurrentTransport;
+			std::future<std::shared_ptr<i2p::transport::TransportSession> > m_PendingTransport;
+	};	
 }
 }
 

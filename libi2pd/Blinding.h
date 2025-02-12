@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2020, The PurpleI2P Project
+* Copyright (c) 2013-2025, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -11,6 +11,7 @@
 
 #include <inttypes.h>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "Identity.h"
 
@@ -23,13 +24,13 @@ namespace data
 		public:
 
 			BlindedPublicKey (std::shared_ptr<const IdentityEx> identity, bool clientAuth = false);
-			BlindedPublicKey (const std::string& b33); // from b33 without .b32.i2p
+			BlindedPublicKey (std::string_view b33); // from b33 without .b32.i2p
 			std::string ToB33 () const;
 
 			const uint8_t * GetPublicKey () const { return m_PublicKey.data (); };
 			size_t GetPublicKeyLen () const { return m_PublicKey.size (); };
-			SigningKeyType GetSigType () const  { return m_SigType; };
-			SigningKeyType GetBlindedSigType () const  { return m_BlindedSigType; };
+			SigningKeyType GetSigType () const { return m_SigType; };
+			SigningKeyType GetBlindedSigType () const { return m_BlindedSigType; };
 			bool IsValid () const { return GetSigType (); }; // signature type 0 means invalid
 
 			void GetSubcredential (const uint8_t * blinded, size_t len, uint8_t * subcredential) const; // 32 bytes

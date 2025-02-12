@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2021, The PurpleI2P Project
+* Copyright (c) 2013-2024, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -91,7 +91,7 @@ namespace tunnel
 
 			TunnelConfig (const std::vector<std::shared_ptr<const i2p::data::IdentityEx> >& peers,
 				uint32_t replyTunnelID, const i2p::data::IdentHash& replyIdent, bool isShort,
-			    i2p::data::RouterInfo::CompatibleTransports farEndTransports = i2p::data::RouterInfo::eAllTransports): // outbound
+				i2p::data::RouterInfo::CompatibleTransports farEndTransports = i2p::data::RouterInfo::eAllTransports): // outbound
 				m_IsShort (isShort), m_FarEndTransports (farEndTransports)
 			{
 				CreatePeers (peers);
@@ -181,6 +181,8 @@ namespace tunnel
 				return peers;
 			}
 
+			size_t GetRecordSize () const { return m_IsShort ? SHORT_TUNNEL_BUILD_RECORD_SIZE : TUNNEL_BUILD_RECORD_SIZE; };
+			
 		protected:
 
 			// this constructor can't be called from outside

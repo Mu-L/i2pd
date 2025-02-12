@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2021, The PurpleI2P Project
+* Copyright (c) 2013-2024, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -35,6 +35,13 @@ namespace tunnel
 		if (!m_CurrentTunnelDataMsg)
 		{
 			CreateCurrentTunnelDataMessage ();
+			if (block.data && block.data->onDrop)
+			{	
+				// onDrop is called for the first fragment in tunnel message
+				// that's usually true for short TBMs or lookups 
+				m_CurrentTunnelDataMsg->onDrop = block.data->onDrop;
+				block.data->onDrop = nullptr;
+			}	
 			messageCreated = true;
 		}
 
@@ -155,7 +162,6 @@ namespace tunnel
 
 	void TunnelGatewayBuffer::CreateCurrentTunnelDataMessage ()
 	{
-		m_CurrentTunnelDataMsg = nullptr;
 		m_CurrentTunnelDataMsg = NewI2NPTunnelMessage (true); // tunnel endpoint is at least of two tunnel messages size
 		// we reserve space for padding
 		m_CurrentTunnelDataMsg->offset += TUNNEL_DATA_MSG_SIZE + I2NP_HEADER_SIZE;
@@ -214,20 +220,24 @@ namespace tunnel
 
 	void TunnelGateway::SendBuffer ()
 	{
+		// create list or tunnel messages
 		m_Buffer.CompleteCurrentTunnelDataMessage ();
-		std::vector<std::shared_ptr<I2NPMessage> > newTunnelMsgs;
+		std::list<std::shared_ptr<I2NPMessage> > newTunnelMsgs;
 		const auto& tunnelDataMsgs = m_Buffer.GetTunnelDataMsgs ();
 		for (auto& tunnelMsg : tunnelDataMsgs)
 		{
 			auto newMsg = CreateEmptyTunnelDataMsg (false);
-			m_Tunnel->EncryptTunnelMsg (tunnelMsg, newMsg);
-			htobe32buf (newMsg->GetPayload (), m_Tunnel->GetNextTunnelID ());
+			m_Tunnel.EncryptTunnelMsg (tunnelMsg, newMsg);
+			htobe32buf (newMsg->GetPayload (), m_Tunnel.GetNextTunnelID ());
 			newMsg->FillI2NPMessageHeader (eI2NPTunnelData);
+			if (tunnelMsg->onDrop) newMsg->onDrop = tunnelMsg->onDrop;
 			newTunnelMsgs.push_back (newMsg);
 			m_NumSentBytes += TUNNEL_DATA_MSG_SIZE;
 		}
 		m_Buffer.ClearTunnelDataMsgs ();
-		i2p::transport::transports.SendMessages (m_Tunnel->GetNextIdentHash (), newTunnelMsgs);
+		// send 
+		if (!m_Sender) m_Sender = std::make_unique<TunnelTransportSender>();
+		m_Sender->SendMessagesTo (m_Tunnel.GetNextIdentHash (), std::move (newTunnelMsgs));		
 	}
 }
 }

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2020, The PurpleI2P Project
+* Copyright (c) 2013-2024, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -14,6 +14,16 @@
 #include <iostream>
 #include <sstream>
 #include <functional>
+
+#ifndef STD_FILESYSTEM
+#	if (_WIN32 && __GNUG__) // MinGW GCC somehow incorrectly converts paths
+#		define STD_FILESYSTEM 0
+#	elif (!TARGET_OS_SIMULATOR && __has_include(<filesystem>)) // supports std::filesystem
+#		define STD_FILESYSTEM 1
+#	else
+#		define STD_FILESYSTEM 0
+#	endif
+#endif
 
 namespace i2p {
 namespace fs {
@@ -83,8 +93,8 @@ namespace fs {
 
 	/**
 	 * @brief Set datadir either from cmdline option or using autodetection
-	 * @param cmdline_param  Value of cmdline parameter --datadir=<something>
-	 * @param isService      Value of cmdline parameter --service
+	 * @param cmdline_param Value of cmdline parameter --datadir=<something>
+	 * @param isService Value of cmdline parameter --service
 	 *
 	 * Examples of autodetected paths:
 	 *
@@ -93,11 +103,11 @@ namespace fs {
 	 *   Mac: /Library/Application Support/i2pd/ or ~/Library/Application Support/i2pd/
 	 *   Unix: /var/lib/i2pd/ (system=1) >> ~/.i2pd/ or /tmp/i2pd/
 	 */
-	 void DetectDataDir(const std::string & cmdline_datadir, bool isService = false);
+	void DetectDataDir(const std::string & cmdline_datadir, bool isService = false);
 
 	/**
 	 * @brief Set certsdir either from cmdline option or using autodetection
-	 * @param cmdline_param  Value of cmdline parameter --certsdir=<something>
+	 * @param cmdline_param Value of cmdline parameter --certsdir=<something>
 	 *
 	 * Examples of autodetected paths:
 	 *
@@ -106,7 +116,7 @@ namespace fs {
 	 *   Mac: /Library/Application Support/i2pd/ or ~/Library/Application Support/i2pd/certificates
 	 *   Unix: /var/lib/i2pd/certificates (system=1) >> ~/.i2pd/ or /tmp/i2pd/certificates
 	 */
-	 void SetCertsDir(const std::string & cmdline_certsdir);
+	void SetCertsDir(const std::string & cmdline_certsdir);
 
 	/**
 	 * @brief Create subdirectories inside datadir
@@ -115,7 +125,7 @@ namespace fs {
 
 	/**
 	 * @brief Get list of files in directory
-	 * @param path  Path to directory
+	 * @param path Path to directory
 	 * @param files Vector to store found files
 	 * @return true on success and false if directory not exists
 	 */

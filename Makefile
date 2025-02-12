@@ -4,7 +4,7 @@ SYS := $(shell $(CXX) -dumpmachine)
 
 ifneq (, $(findstring darwin, $(SYS)))
 	SHARED_SUFFIX = dylib
-else ifneq (, $(findstring mingw, $(SYS))$(findstring cygwin, $(SYS)))
+else ifneq (, $(findstring mingw, $(SYS))$(findstring windows-gnu, $(SYS))$(findstring cygwin, $(SYS)))
 	SHARED_SUFFIX = dll
 else
 	SHARED_SUFFIX = so
@@ -29,9 +29,7 @@ DAEMON_SRC_DIR := daemon
 # import source files lists
 include filelist.mk
 
-USE_AESNI       := $(or $(USE_AESNI),yes)
 USE_STATIC      := $(or $(USE_STATIC),no)
-USE_MESHNET     := $(or $(USE_MESHNET),no)
 USE_UPNP        := $(or $(USE_UPNP),no)
 DEBUG           := $(or $(DEBUG),yes)
 
@@ -48,6 +46,10 @@ else
 	LD_DEBUG = -s
 endif
 
+ifneq (, $(DESTDIR))
+	PREFIX = $(DESTDIR)
+endif
+
 ifneq (, $(findstring darwin, $(SYS)))
 	DAEMON_SRC += $(DAEMON_SRC_DIR)/UnixDaemon.cpp
 	ifeq ($(HOMEBREW),1)
@@ -55,29 +57,30 @@ ifneq (, $(findstring darwin, $(SYS)))
 	else
 		include Makefile.osx
 	endif
+else ifneq (, $(findstring mingw, $(SYS))$(findstring windows-gnu, $(SYS))$(findstring cygwin, $(SYS)))
+	DAEMON_SRC += Win32/DaemonWin32.cpp Win32/Win32App.cpp Win32/Win32Service.cpp Win32/Win32NetState.cpp
+	include Makefile.mingw
 else ifneq (, $(findstring linux, $(SYS))$(findstring gnu, $(SYS)))
 	DAEMON_SRC += $(DAEMON_SRC_DIR)/UnixDaemon.cpp
 	include Makefile.linux
 else ifneq (, $(findstring freebsd, $(SYS))$(findstring openbsd, $(SYS)))
 	DAEMON_SRC += $(DAEMON_SRC_DIR)/UnixDaemon.cpp
 	include Makefile.bsd
-else ifneq (, $(findstring mingw, $(SYS))$(findstring cygwin, $(SYS)))
-	DAEMON_SRC += Win32/DaemonWin32.cpp Win32/Win32App.cpp Win32/Win32Service.cpp Win32/Win32NetState.cpp
-	include Makefile.mingw
+else ifneq (, $(findstring haiku, $(SYS)))
+	DAEMON_SRC += $(DAEMON_SRC_DIR)/UnixDaemon.cpp
+	include Makefile.haiku
 else # not supported
 	$(error Not supported platform)
 endif
 
-ifeq ($(USE_MESHNET),yes)
-	NEEDED_CXXFLAGS += -DMESHNET
-endif
+INCFLAGS += -I$(LIB_SRC_DIR) -I$(LIB_CLIENT_SRC_DIR) -I$(LANG_SRC_DIR)
+DEFINES += -DOPENSSL_SUPPRESS_DEPRECATED
+NEEDED_CXXFLAGS += -MMD -MP
 
 ifeq ($(USE_GIT_VERSION),yes)
 	GIT_VERSION := $(shell git describe --tags)
-	NEEDED_CXXFLAGS += -DGITVER=\"$(GIT_VERSION)\"
+	DEFINES += -DGITVER=$(GIT_VERSION)
 endif
-
-NEEDED_CXXFLAGS += -MMD -MP -I$(LIB_SRC_DIR) -I$(LIB_CLIENT_SRC_DIR) -I$(LANG_SRC_DIR)
 
 LIB_OBJS        += $(patsubst %.cpp,obj/%.o,$(LIB_SRC))
 LIB_CLIENT_OBJS += $(patsubst %.cpp,obj/%.o,$(LIB_CLIENT_SRC))
@@ -111,17 +114,17 @@ wrapper: api_client $(SHLIB_WRAP) $(ARLIB_WRAP)
 ## custom FLAGS to work at build-time.
 
 obj/%.o: %.cpp | mk_obj_dir
-	$(CXX) $(CXXFLAGS) $(NEEDED_CXXFLAGS) $(INCFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(NEEDED_CXXFLAGS) $(DEFINES) $(INCFLAGS) -c -o $@ $<
 
 # '-' is 'ignore if missing' on first run
 -include $(DEPS)
 
 $(I2PD): $(DAEMON_OBJS) $(ARLIB) $(ARLIB_CLIENT) $(ARLIB_LANG)
-	$(CXX) -o $@ $(LDFLAGS) $^ $(LDLIBS)
+	$(CXX) $(DEFINES) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(SHLIB): $(LIB_OBJS) $(SHLIB_LANG)
+$(SHLIB): $(LIB_OBJS)
 ifneq ($(USE_STATIC),yes)
-	$(CXX) $(LDFLAGS) -shared -o $@ $^ $(LDLIBS) $(SHLIB_LANG)
+	$(CXX) $(LDFLAGS) -shared -o $@ $^ $(LDLIBS)
 endif
 
 $(SHLIB_CLIENT): $(LIB_CLIENT_OBJS) $(SHLIB) $(SHLIB_LANG)

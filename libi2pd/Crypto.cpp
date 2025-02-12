@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2013-2022, The PurpleI2P Project
+* Copyright (c) 2013-2025, The PurpleI2P Project
 *
 * This file is part of Purple i2pd project and licensed under BSD3
 *
@@ -19,10 +19,7 @@
 #if OPENSSL_HKDF
 #include <openssl/kdf.h>
 #endif
-#if !OPENSSL_AEAD_CHACHA20_POLY1305
-#include "ChaCha20.h"
-#include "Poly1305.h"
-#endif
+#include "CPU.h"
 #include "Crypto.h"
 #include "Ed25519.h"
 #include "I2PEndian.h"
@@ -159,8 +156,10 @@ namespace crypto
 
 // DH/ElGamal
 
+#if !IS_X86_64
 	const int ELGAMAL_SHORT_EXPONENT_NUM_BITS = 226;
 	const int ELGAMAL_SHORT_EXPONENT_NUM_BYTES = ELGAMAL_SHORT_EXPONENT_NUM_BITS/8+1;
+#endif
 	const int ELGAMAL_FULL_EXPONENT_NUM_BITS = 2048;
 	const int ELGAMAL_FULL_EXPONENT_NUM_BYTES = ELGAMAL_FULL_EXPONENT_NUM_BITS/8;
 
@@ -239,69 +238,15 @@ namespace crypto
 
 	static BIGNUM * (* g_ElggTable)[255] = nullptr;
 
-// DH
-
-	DHKeys::DHKeys ()
-	{
-		m_DH = DH_new ();
-		DH_set0_pqg (m_DH, BN_dup (elgp), NULL, BN_dup (elgg));
-		DH_set0_key (m_DH, NULL, NULL);
-	}
-
-	DHKeys::~DHKeys ()
-	{
-		DH_free (m_DH);
-	}
-
-	void DHKeys::GenerateKeys ()
-	{
-		BIGNUM * priv_key = NULL, * pub_key = NULL;
-#if !defined(__x86_64__) // use short exponent for non x64
-		priv_key = BN_new ();
-		BN_rand (priv_key, ELGAMAL_SHORT_EXPONENT_NUM_BITS, 0, 1);
-#endif
-		if (g_ElggTable)
-		{
-#if defined(__x86_64__)
-			priv_key = BN_new ();
-			BN_rand (priv_key, ELGAMAL_FULL_EXPONENT_NUM_BITS, 0, 1);
-#endif
-			auto ctx = BN_CTX_new ();
-			pub_key = ElggPow (priv_key, g_ElggTable, ctx);
-			DH_set0_key (m_DH, pub_key, priv_key);
-			BN_CTX_free (ctx);
-		}
-		else
-		{
-			DH_set0_key (m_DH, NULL, priv_key);
-			DH_generate_key (m_DH);
-			DH_get0_key (m_DH, (const BIGNUM **)&pub_key, (const BIGNUM **)&priv_key);
-		}
-
-		bn2buf (pub_key, m_PublicKey, 256);
-	}
-
-	void DHKeys::Agree (const uint8_t * pub, uint8_t * shared)
-	{
-		BIGNUM * pk = BN_bin2bn (pub, 256, NULL);
-		DH_compute_key (shared, pk, m_DH);
-		BN_free (pk);
-	}
-
 // x25519
 	X25519Keys::X25519Keys ()
 	{
-#if OPENSSL_X25519
 		m_Ctx = EVP_PKEY_CTX_new_id (NID_X25519, NULL);
 		m_Pkey = nullptr;
-#else
-		m_Ctx = BN_CTX_new ();
-#endif
 	}
 
 	X25519Keys::X25519Keys (const uint8_t * priv, const uint8_t * pub)
 	{
-#if OPENSSL_X25519
 		m_Pkey = EVP_PKEY_new_raw_private_key (EVP_PKEY_X25519, NULL, priv, 32);
 		m_Ctx = EVP_PKEY_CTX_new (m_Pkey, NULL);
 		if (pub)
@@ -311,29 +256,16 @@ namespace crypto
 			size_t len = 32;
 			EVP_PKEY_get_raw_public_key (m_Pkey, m_PublicKey, &len);
 		}
-#else
-		m_Ctx = BN_CTX_new ();
-		memcpy (m_PrivateKey, priv, 32);
-		if (pub)
-			memcpy (m_PublicKey, pub, 32);
-		else
-			GetEd25519 ()->ScalarMulB (m_PrivateKey, m_PublicKey, m_Ctx);
-#endif
 	}
 
 	X25519Keys::~X25519Keys ()
 	{
-#if OPENSSL_X25519
 		EVP_PKEY_CTX_free (m_Ctx);
 		if (m_Pkey) EVP_PKEY_free (m_Pkey);
-#else
-		BN_CTX_free (m_Ctx);
-#endif
 	}
 
 	void X25519Keys::GenerateKeys ()
 	{
-#if OPENSSL_X25519
 		if (m_Pkey)
 		{
 			EVP_PKEY_free (m_Pkey);
@@ -345,16 +277,11 @@ namespace crypto
 		m_Ctx = EVP_PKEY_CTX_new (m_Pkey, NULL); // TODO: do we really need to re-create m_Ctx?
 		size_t len = 32;
 		EVP_PKEY_get_raw_public_key (m_Pkey, m_PublicKey, &len);
-#else
-		RAND_bytes (m_PrivateKey, 32);
-		GetEd25519 ()->ScalarMulB (m_PrivateKey, m_PublicKey, m_Ctx);
-#endif
 	}
 
 	bool X25519Keys::Agree (const uint8_t * pub, uint8_t * shared)
 	{
 		if (!pub || (pub[31] & 0x80)) return false; // not x25519 key
-#if OPENSSL_X25519
 		EVP_PKEY_derive_init (m_Ctx);
 		auto pkey = EVP_PKEY_new_raw_public_key (EVP_PKEY_X25519, NULL, pub, 32);
 		if (!pkey) return false;
@@ -362,25 +289,17 @@ namespace crypto
 		size_t len = 32;
 		EVP_PKEY_derive (m_Ctx, shared, &len);
 		EVP_PKEY_free (pkey);
-#else
-		GetEd25519 ()->ScalarMul (pub, m_PrivateKey, shared, m_Ctx);
-#endif
 		return true;
 	}
 
 	void X25519Keys::GetPrivateKey (uint8_t * priv) const
 	{
-#if OPENSSL_X25519
 		size_t len = 32;
 		EVP_PKEY_get_raw_private_key (m_Pkey, priv, &len);
-#else
-		memcpy (priv, m_PrivateKey, 32);
-#endif
 	}
 
 	void X25519Keys::SetPrivateKey (const uint8_t * priv, bool calculatePublic)
 	{
-#if OPENSSL_X25519
 		if (m_Ctx) EVP_PKEY_CTX_free (m_Ctx);
 		if (m_Pkey) EVP_PKEY_free (m_Pkey);
 		m_Pkey = EVP_PKEY_new_raw_private_key (EVP_PKEY_X25519, NULL, priv, 32);
@@ -390,11 +309,6 @@ namespace crypto
 			size_t len = 32;
 			EVP_PKEY_get_raw_public_key (m_Pkey, m_PublicKey, &len);
 		}
-#else
-		memcpy (m_PrivateKey, priv, 32);
-		if (calculatePublic)
-			GetEd25519 ()->ScalarMulB (m_PrivateKey, m_PublicKey, m_Ctx);
-#endif
 	}
 
 // ElGamal
@@ -408,7 +322,7 @@ namespace crypto
 		BIGNUM * b1 = BN_CTX_get (ctx);
 		BIGNUM * b = BN_CTX_get (ctx);
 		// select random k
-#if defined(__x86_64__)
+#if IS_X86_64
 		BN_rand (k, ELGAMAL_FULL_EXPONENT_NUM_BITS, -1, 1); // full exponent for x64
 #else
 		BN_rand (k, ELGAMAL_SHORT_EXPONENT_NUM_BITS, -1, 1); // short exponent of 226 bits
@@ -475,7 +389,7 @@ namespace crypto
 
 	void GenerateElGamalKeyPair (uint8_t * priv, uint8_t * pub)
 	{
-#if defined(__x86_64__) || defined(__i386__) || defined(_MSC_VER)
+#if IS_X86 || defined(_MSC_VER)
 		RAND_bytes (priv, 256);
 #else
 		// lower 226 bits (28 bytes and 2 bits) only. short exponent
@@ -528,9 +442,8 @@ namespace crypto
 		// encrypt
 		CBCEncryption encryption;
 		encryption.SetKey (shared);
-		encryption.SetIV (iv);
 		encrypted[257] = 0;
-		encryption.Encrypt (m, 256, encrypted + 258);
+		encryption.Encrypt (m, 256, iv, encrypted + 258);
 		EC_POINT_free (p);
 		BN_CTX_end (ctx);
 		BN_CTX_free (ctx);
@@ -563,8 +476,7 @@ namespace crypto
 			uint8_t m[256];
 			CBCDecryption decryption;
 			decryption.SetKey (shared);
-			decryption.SetIV (iv);
-			decryption.Decrypt (encrypted + 258, 256, m);
+			decryption.Decrypt (encrypted + 258, 256, iv, m);
 			// verify and copy
 			uint8_t hash[32];
 			SHA256 (m + 33, 222, hash);
@@ -601,507 +513,115 @@ namespace crypto
 		BN_CTX_free (ctx);
 	}
 
-// HMAC
-	const uint64_t IPAD = 0x3636363636363636;
-	const uint64_t OPAD = 0x5C5C5C5C5C5C5C5C;
-
-
-	static const uint64_t ipads[] = { IPAD, IPAD, IPAD, IPAD };
-	static const uint64_t opads[] = { OPAD, OPAD, OPAD, OPAD };
-
-	void HMACMD5Digest (uint8_t * msg, size_t len, const MACKey& key, uint8_t * digest)
-	// key is 32 bytes
-	// digest is 16 bytes
-	// block size is 64 bytes
-	{
-		uint64_t buf[256];
-		uint64_t hash[12]; // 96 bytes
-#if (defined(__x86_64__) || defined(__i386__)) && defined(__AVX__) // not all X86 targets supports AVX (like old Pentium, see #1600)
-		if(i2p::cpu::avx)
-		{
-			__asm__
-				(
-					"vmovups %[key], %%ymm0 \n"
-					"vmovups %[ipad], %%ymm1 \n"
-					"vmovups %%ymm1, 32(%[buf]) \n"
-					"vxorps %%ymm0, %%ymm1, %%ymm1 \n"
-					"vmovups %%ymm1, (%[buf]) \n"
-					"vmovups %[opad], %%ymm1 \n"
-					"vmovups %%ymm1, 32(%[hash]) \n"
-					"vxorps %%ymm0, %%ymm1, %%ymm1 \n"
-					"vmovups %%ymm1, (%[hash]) \n"
-					"vzeroall \n" // end of AVX
-					"movups %%xmm0, 80(%[hash]) \n" // zero last 16 bytes
-					:
-					: [key]"m"(*(const uint8_t *)key), [ipad]"m"(*ipads), [opad]"m"(*opads),
-						[buf]"r"(buf), [hash]"r"(hash)
-					: "memory", "%xmm0" // TODO: change to %ymm0 later
-					);
-		}
-		else
-#endif
-		{
-			// ikeypad
-			buf[0] = key.GetLL ()[0] ^ IPAD;
-			buf[1] = key.GetLL ()[1] ^ IPAD;
-			buf[2] = key.GetLL ()[2] ^ IPAD;
-			buf[3] = key.GetLL ()[3] ^ IPAD;
-			buf[4] = IPAD;
-			buf[5] = IPAD;
-			buf[6] = IPAD;
-			buf[7] = IPAD;
-			// okeypad
-			hash[0] = key.GetLL ()[0] ^ OPAD;
-			hash[1] = key.GetLL ()[1] ^ OPAD;
-			hash[2] = key.GetLL ()[2] ^ OPAD;
-			hash[3] = key.GetLL ()[3] ^ OPAD;
-			hash[4] = OPAD;
-			hash[5] = OPAD;
-			hash[6] = OPAD;
-			hash[7] = OPAD;
-			// fill last 16 bytes with zeros (first hash size assumed 32 bytes in I2P)
-			memset (hash + 10, 0, 16);
-		}
-
-		// concatenate with msg
-		memcpy (buf + 8, msg, len);
-		// calculate first hash
-		MD5((uint8_t *)buf, len + 64, (uint8_t *)(hash + 8)); // 16 bytes
-
-		// calculate digest
-		MD5((uint8_t *)hash, 96, digest);
-	}
-
 // AES
-#ifdef __AES__
-	#define KeyExpansion256(round0,round1) \
-		"pshufd $0xff, %%xmm2, %%xmm2 \n" \
-		"movaps %%xmm1, %%xmm4 \n" \
-		"pslldq $4, %%xmm4 \n" \
-		"pxor %%xmm4, %%xmm1 \n" \
-		"pslldq $4, %%xmm4 \n" \
-		"pxor %%xmm4, %%xmm1 \n" \
-		"pslldq $4, %%xmm4 \n" \
-		"pxor %%xmm4, %%xmm1 \n" \
-		"pxor %%xmm2, %%xmm1 \n" \
-		"movaps %%xmm1, "#round0"(%[sched]) \n" \
-		"aeskeygenassist $0, %%xmm1, %%xmm4 \n" \
-		"pshufd $0xaa, %%xmm4, %%xmm2 \n" \
-		"movaps %%xmm3, %%xmm4 \n" \
-		"pslldq $4, %%xmm4 \n" \
-		"pxor %%xmm4, %%xmm3 \n" \
-		"pslldq $4, %%xmm4 \n" \
-		"pxor %%xmm4, %%xmm3 \n" \
-		"pslldq $4, %%xmm4 \n" \
-		"pxor %%xmm4, %%xmm3 \n" \
-		"pxor %%xmm2, %%xmm3 \n" \
-		"movaps %%xmm3, "#round1"(%[sched]) \n"
-#endif
-
-#ifdef __AES__
-	void ECBCryptoAESNI::ExpandKey (const AESKey& key)
+	ECBEncryption::ECBEncryption ()
 	{
-		__asm__
-		(
-			"movups (%[key]), %%xmm1 \n"
-			"movups 16(%[key]), %%xmm3 \n"
-			"movaps %%xmm1, (%[sched]) \n"
-			"movaps %%xmm3, 16(%[sched]) \n"
-			"aeskeygenassist $1, %%xmm3, %%xmm2 \n"
-			KeyExpansion256(32,48)
-			"aeskeygenassist $2, %%xmm3, %%xmm2 \n"
-			KeyExpansion256(64,80)
-			"aeskeygenassist $4, %%xmm3, %%xmm2 \n"
-			KeyExpansion256(96,112)
-			"aeskeygenassist $8, %%xmm3, %%xmm2 \n"
-			KeyExpansion256(128,144)
-			"aeskeygenassist $16, %%xmm3, %%xmm2 \n"
-			KeyExpansion256(160,176)
-			"aeskeygenassist $32, %%xmm3, %%xmm2 \n"
-			KeyExpansion256(192,208)
-			"aeskeygenassist $64, %%xmm3, %%xmm2 \n"
-			// key expansion final
-			"pshufd $0xff, %%xmm2, %%xmm2 \n"
-			"movaps %%xmm1, %%xmm4 \n"
-			"pslldq $4, %%xmm4 \n"
-			"pxor %%xmm4, %%xmm1 \n"
-			"pslldq $4, %%xmm4 \n"
-			"pxor %%xmm4, %%xmm1 \n"
-			"pslldq $4, %%xmm4 \n"
-			"pxor %%xmm4, %%xmm1 \n"
-			"pxor %%xmm2, %%xmm1 \n"
-			"movups %%xmm1, 224(%[sched]) \n"
-			: // output
-			: [key]"r"((const uint8_t *)key), [sched]"r"(GetKeySchedule ()) // input
-			: "%xmm1", "%xmm2", "%xmm3", "%xmm4", "memory" // clogged
-		);
+		m_Ctx = EVP_CIPHER_CTX_new ();
 	}
-#endif
-
-
-#ifdef __AES__
-	#define EncryptAES256(sched) \
-		"pxor (%["#sched"]), %%xmm0 \n" \
-		"aesenc	16(%["#sched"]), %%xmm0 \n" \
-		"aesenc	32(%["#sched"]), %%xmm0 \n" \
-		"aesenc	48(%["#sched"]), %%xmm0 \n" \
-		"aesenc	64(%["#sched"]), %%xmm0 \n" \
-		"aesenc	80(%["#sched"]), %%xmm0 \n" \
-		"aesenc	96(%["#sched"]), %%xmm0 \n" \
-		"aesenc	112(%["#sched"]), %%xmm0 \n" \
-		"aesenc	128(%["#sched"]), %%xmm0 \n" \
-		"aesenc	144(%["#sched"]), %%xmm0 \n" \
-		"aesenc	160(%["#sched"]), %%xmm0 \n" \
-		"aesenc	176(%["#sched"]), %%xmm0 \n" \
-		"aesenc	192(%["#sched"]), %%xmm0 \n" \
-		"aesenc	208(%["#sched"]), %%xmm0 \n" \
-		"aesenclast	224(%["#sched"]), %%xmm0 \n"
-#endif
-
-	void ECBEncryption::Encrypt (const ChipherBlock * in, ChipherBlock * out)
+	
+	ECBEncryption::~ECBEncryption ()
 	{
-#ifdef __AES__
-		if(i2p::cpu::aesni)
-		{
-			__asm__
-				(
-					"movups (%[in]), %%xmm0 \n"
-					EncryptAES256(sched)
-					"movups %%xmm0, (%[out]) \n"
-					: : [sched]"r"(GetKeySchedule ()), [in]"r"(in), [out]"r"(out) : "%xmm0", "memory"
-					);
-		}
-		else
-#endif
-		{
-			AES_encrypt (in->buf, out->buf, &m_Key);
-		}
+		if (m_Ctx)
+			EVP_CIPHER_CTX_free (m_Ctx);
+	}	
+	
+	void ECBEncryption::Encrypt (const uint8_t * in, uint8_t * out)
+	{
+		EVP_EncryptInit_ex (m_Ctx, EVP_aes_256_ecb(), NULL, m_Key, NULL);
+		EVP_CIPHER_CTX_set_padding (m_Ctx, 0);
+		int len;
+		EVP_EncryptUpdate (m_Ctx, out, &len, in, 16);
+		EVP_EncryptFinal_ex (m_Ctx, out + len, &len);
 	}
 
-#ifdef __AES__
-	#define DecryptAES256(sched) \
-		"pxor 224(%["#sched"]), %%xmm0 \n" \
-		"aesdec	208(%["#sched"]), %%xmm0 \n" \
-		"aesdec	192(%["#sched"]), %%xmm0 \n" \
-		"aesdec	176(%["#sched"]), %%xmm0 \n" \
-		"aesdec	160(%["#sched"]), %%xmm0 \n" \
-		"aesdec	144(%["#sched"]), %%xmm0 \n" \
-		"aesdec	128(%["#sched"]), %%xmm0 \n" \
-		"aesdec	112(%["#sched"]), %%xmm0 \n" \
-		"aesdec	96(%["#sched"]), %%xmm0 \n" \
-		"aesdec	80(%["#sched"]), %%xmm0 \n" \
-		"aesdec	64(%["#sched"]), %%xmm0 \n" \
-		"aesdec	48(%["#sched"]), %%xmm0 \n" \
-		"aesdec	32(%["#sched"]), %%xmm0 \n" \
-		"aesdec	16(%["#sched"]), %%xmm0 \n" \
-		"aesdeclast (%["#sched"]), %%xmm0 \n"
-#endif
-
-	void ECBDecryption::Decrypt (const ChipherBlock * in, ChipherBlock * out)
+	ECBDecryption::ECBDecryption ()
 	{
-#ifdef __AES__
-		if(i2p::cpu::aesni)
-		{
-			__asm__
-				(
-					"movups (%[in]), %%xmm0 \n"
-					DecryptAES256(sched)
-					"movups %%xmm0, (%[out]) \n"
-					: : [sched]"r"(GetKeySchedule ()), [in]"r"(in), [out]"r"(out) : "%xmm0", "memory"
-					);
-		}
-		else
-#endif
-		{
-			AES_decrypt (in->buf, out->buf, &m_Key);
-		}
+		m_Ctx = EVP_CIPHER_CTX_new ();
+	}
+	
+	ECBDecryption::~ECBDecryption ()
+	{
+		if (m_Ctx)
+			EVP_CIPHER_CTX_free (m_Ctx);
+	}	
+	
+	void ECBDecryption::Decrypt (const uint8_t * in, uint8_t * out)
+	{
+		EVP_DecryptInit_ex (m_Ctx, EVP_aes_256_ecb(), NULL, m_Key, NULL);
+		EVP_CIPHER_CTX_set_padding (m_Ctx, 0);
+		int len;
+		EVP_DecryptUpdate (m_Ctx, out, &len, in, 16);
+		EVP_DecryptFinal_ex (m_Ctx, out + len, &len);
 	}
 
-#ifdef __AES__
-	#define CallAESIMC(offset) \
-		"movaps "#offset"(%[shed]), %%xmm0 \n" \
-		"aesimc %%xmm0, %%xmm0 \n" \
-		"movaps %%xmm0, "#offset"(%[shed]) \n"
-#endif
 
-	void ECBEncryption::SetKey (const AESKey& key)
-	{
-#ifdef __AES__
-		if(i2p::cpu::aesni)
-		{
-			ExpandKey (key);
-		}
-		else
-#endif
-		{
-			AES_set_encrypt_key (key, 256, &m_Key);
-		}
+	CBCEncryption::CBCEncryption () 
+	{ 
+		m_Ctx = EVP_CIPHER_CTX_new ();
 	}
-
-	void ECBDecryption::SetKey (const AESKey& key)
+	
+	CBCEncryption::~CBCEncryption ()
 	{
-#ifdef __AES__
-		if(i2p::cpu::aesni)
-		{
-			ExpandKey (key); // expand encryption key first
-			// then invert it using aesimc
-			__asm__
-				(
-					CallAESIMC(16)
-					CallAESIMC(32)
-					CallAESIMC(48)
-					CallAESIMC(64)
-					CallAESIMC(80)
-					CallAESIMC(96)
-					CallAESIMC(112)
-					CallAESIMC(128)
-					CallAESIMC(144)
-					CallAESIMC(160)
-					CallAESIMC(176)
-					CallAESIMC(192)
-					CallAESIMC(208)
-					: : [shed]"r"(GetKeySchedule ()) : "%xmm0", "memory"
-					);
-		}
-		else
-#endif
-		{
-			AES_set_decrypt_key (key, 256, &m_Key);
-		}
-	}
-
-	void CBCEncryption::Encrypt (int numBlocks, const ChipherBlock * in, ChipherBlock * out)
-	{
-#ifdef __AES__
-		if(i2p::cpu::aesni)
-		{
-			__asm__
-				(
-					"movups (%[iv]), %%xmm1 \n"
-					"1: \n"
-					"movups (%[in]), %%xmm0 \n"
-					"pxor %%xmm1, %%xmm0 \n"
-					EncryptAES256(sched)
-					"movaps %%xmm0, %%xmm1 \n"
-					"movups %%xmm0, (%[out]) \n"
-					"add $16, %[in] \n"
-					"add $16, %[out] \n"
-					"dec %[num] \n"
-					"jnz 1b \n"
-					"movups %%xmm1, (%[iv]) \n"
-					:
-					: [iv]"r"((uint8_t *)m_LastBlock), [sched]"r"(m_ECBEncryption.GetKeySchedule ()),
-						[in]"r"(in), [out]"r"(out), [num]"r"(numBlocks)
-					: "%xmm0", "%xmm1", "cc", "memory"
-					);
-		}
-		else
-#endif
-		{
-			for (int i = 0; i < numBlocks; i++)
-			{
-				*m_LastBlock.GetChipherBlock () ^= in[i];
-				m_ECBEncryption.Encrypt (m_LastBlock.GetChipherBlock (), m_LastBlock.GetChipherBlock ());
-				out[i] = *m_LastBlock.GetChipherBlock ();
-			}
-		}
-	}
-
-	void CBCEncryption::Encrypt (const uint8_t * in, std::size_t len, uint8_t * out)
+		if (m_Ctx)
+			EVP_CIPHER_CTX_free (m_Ctx);
+	}	
+	
+	void CBCEncryption::Encrypt (const uint8_t * in, size_t len, const uint8_t * iv, uint8_t * out)
 	{
 		// len/16
-		int numBlocks = len >> 4;
-		if (numBlocks > 0)
-			Encrypt (numBlocks, (const ChipherBlock *)in, (ChipherBlock *)out);
+		EVP_EncryptInit_ex (m_Ctx, EVP_aes_256_cbc(), NULL, m_Key, iv);
+		EVP_CIPHER_CTX_set_padding (m_Ctx, 0);
+		int l;
+		EVP_EncryptUpdate (m_Ctx, out, &l, in, len);
+		EVP_EncryptFinal_ex (m_Ctx, out + l, &l);
 	}
 
-	void CBCEncryption::Encrypt (const uint8_t * in, uint8_t * out)
-	{
-#ifdef __AES__
-		if(i2p::cpu::aesni)
-		{
-			__asm__
-				(
-					"movups (%[iv]), %%xmm1 \n"
-					"movups (%[in]), %%xmm0 \n"
-					"pxor %%xmm1, %%xmm0 \n"
-					EncryptAES256(sched)
-					"movups %%xmm0, (%[out]) \n"
-					"movups %%xmm0, (%[iv]) \n"
-					:
-					: [iv]"r"((uint8_t *)m_LastBlock), [sched]"r"(m_ECBEncryption.GetKeySchedule ()),
-						[in]"r"(in), [out]"r"(out)
-					: "%xmm0", "%xmm1", "memory"
-					);
-		}
-		else
-#endif
-			Encrypt (1, (const ChipherBlock *)in, (ChipherBlock *)out);
+	CBCDecryption::CBCDecryption () 
+	{ 
+		m_Ctx = EVP_CIPHER_CTX_new ();
 	}
-
-	void CBCDecryption::Decrypt (int numBlocks, const ChipherBlock * in, ChipherBlock * out)
+	
+	CBCDecryption::~CBCDecryption ()
 	{
-#ifdef __AES__
-		if(i2p::cpu::aesni)
-		{
-			__asm__
-				(
-					"movups (%[iv]), %%xmm1 \n"
-					"1: \n"
-					"movups (%[in]), %%xmm0 \n"
-					"movaps %%xmm0, %%xmm2 \n"
-					DecryptAES256(sched)
-					"pxor %%xmm1, %%xmm0 \n"
-					"movups %%xmm0, (%[out]) \n"
-					"movaps %%xmm2, %%xmm1 \n"
-					"add $16, %[in] \n"
-					"add $16, %[out] \n"
-					"dec %[num] \n"
-					"jnz 1b \n"
-					"movups %%xmm1, (%[iv]) \n"
-					:
-					: [iv]"r"((uint8_t *)m_IV), [sched]"r"(m_ECBDecryption.GetKeySchedule ()),
-						[in]"r"(in), [out]"r"(out), [num]"r"(numBlocks)
-					: "%xmm0", "%xmm1", "%xmm2", "cc", "memory"
-					);
-		}
-		else
-#endif
-		{
-			for (int i = 0; i < numBlocks; i++)
-			{
-				ChipherBlock tmp = in[i];
-				m_ECBDecryption.Decrypt (in + i, out + i);
-				out[i] ^= *m_IV.GetChipherBlock ();
-				*m_IV.GetChipherBlock () = tmp;
-			}
-		}
-	}
-
-	void CBCDecryption::Decrypt (const uint8_t * in, std::size_t len, uint8_t * out)
+		if (m_Ctx)
+			EVP_CIPHER_CTX_free (m_Ctx);
+	}	
+	
+	void CBCDecryption::Decrypt (const uint8_t * in, size_t len, const uint8_t * iv, uint8_t * out)
 	{
-		int numBlocks = len >> 4;
-		if (numBlocks > 0)
-			Decrypt (numBlocks, (const ChipherBlock *)in, (ChipherBlock *)out);
-	}
-
-	void CBCDecryption::Decrypt (const uint8_t * in, uint8_t * out)
-	{
-#ifdef __AES__
-		if(i2p::cpu::aesni)
-		{
-			__asm__
-				(
-					"movups (%[iv]), %%xmm1 \n"
-					"movups (%[in]), %%xmm0 \n"
-					"movups %%xmm0, (%[iv]) \n"
-					DecryptAES256(sched)
-					"pxor %%xmm1, %%xmm0 \n"
-					"movups %%xmm0, (%[out]) \n"
-					:
-					: [iv]"r"((uint8_t *)m_IV), [sched]"r"(m_ECBDecryption.GetKeySchedule ()),
-						[in]"r"(in), [out]"r"(out)
-					: "%xmm0", "%xmm1", "memory"
-					);
-		}
-		else
-#endif
-			Decrypt (1, (const ChipherBlock *)in, (ChipherBlock *)out);
+		// len/16
+		EVP_DecryptInit_ex (m_Ctx, EVP_aes_256_cbc(), NULL, m_Key, iv);
+		EVP_CIPHER_CTX_set_padding (m_Ctx, 0);
+		int l;
+		EVP_DecryptUpdate (m_Ctx, out, &l, in, len);
+		EVP_DecryptFinal_ex (m_Ctx, out + l, &l);
 	}
 
 	void TunnelEncryption::Encrypt (const uint8_t * in, uint8_t * out)
 	{
-#ifdef __AES__
-		if(i2p::cpu::aesni)
-		{
-			__asm__
-				(
-					// encrypt IV
-					"movups (%[in]), %%xmm0 \n"
-					EncryptAES256(sched_iv)
-					"movaps %%xmm0, %%xmm1 \n"
-					// double IV encryption
-					EncryptAES256(sched_iv)
-					"movups %%xmm0, (%[out]) \n"
-					// encrypt data, IV is xmm1
-					"1: \n"
-					"add $16, %[in] \n"
-					"add $16, %[out] \n"
-					"movups (%[in]), %%xmm0 \n"
-					"pxor %%xmm1, %%xmm0 \n"
-					EncryptAES256(sched_l)
-					"movaps %%xmm0, %%xmm1 \n"
-					"movups %%xmm0, (%[out]) \n"
-					"dec %[num] \n"
-					"jnz 1b \n"
-					:
-					: [sched_iv]"r"(m_IVEncryption.GetKeySchedule ()), [sched_l]"r"(m_LayerEncryption.ECB().GetKeySchedule ()),
-						[in]"r"(in), [out]"r"(out), [num]"r"(63) // 63 blocks = 1008 bytes
-					: "%xmm0", "%xmm1", "cc", "memory"
-					);
-		}
-		else
-#endif
-		{
-			m_IVEncryption.Encrypt ((const ChipherBlock *)in, (ChipherBlock *)out); // iv
-			m_LayerEncryption.SetIV (out);
-			m_LayerEncryption.Encrypt (in + 16, i2p::tunnel::TUNNEL_DATA_ENCRYPTED_SIZE, out + 16); // data
-			m_IVEncryption.Encrypt ((ChipherBlock *)out, (ChipherBlock *)out); // double iv
-		}
+		uint8_t iv[16];
+		m_IVEncryption.Encrypt (in, iv); // iv
+		m_LayerEncryption.Encrypt (in + 16, i2p::tunnel::TUNNEL_DATA_ENCRYPTED_SIZE, iv, out + 16); // data
+		m_IVEncryption.Encrypt (iv, out); // double iv
 	}
 
 	void TunnelDecryption::Decrypt (const uint8_t * in, uint8_t * out)
 	{
-#ifdef __AES__
-		if(i2p::cpu::aesni)
-		{
-			__asm__
-				(
-					// decrypt IV
-					"movups	(%[in]), %%xmm0 \n"
-					DecryptAES256(sched_iv)
-					"movaps %%xmm0, %%xmm1 \n"
-					// double IV encryption
-					DecryptAES256(sched_iv)
-					"movups %%xmm0, (%[out]) \n"
-					// decrypt data, IV is xmm1
-					"1: \n"
-					"add $16, %[in] \n"
-					"add $16, %[out] \n"
-					"movups (%[in]), %%xmm0 \n"
-					"movaps %%xmm0, %%xmm2 \n"
-					DecryptAES256(sched_l)
-					"pxor %%xmm1, %%xmm0 \n"
-					"movups %%xmm0, (%[out]) \n"
-					"movaps %%xmm2, %%xmm1 \n"
-					"dec %[num] \n"
-					"jnz 1b \n"
-					:
-					: [sched_iv]"r"(m_IVDecryption.GetKeySchedule ()), [sched_l]"r"(m_LayerDecryption.ECB().GetKeySchedule ()),
-						[in]"r"(in), [out]"r"(out), [num]"r"(63) // 63 blocks = 1008 bytes
-					: "%xmm0", "%xmm1", "%xmm2", "cc", "memory"
-					);
-		}
-		else
-#endif
-		{
-			m_IVDecryption.Decrypt ((const ChipherBlock *)in, (ChipherBlock *)out); // iv
-			m_LayerDecryption.SetIV (out);
-			m_LayerDecryption.Decrypt (in + 16, i2p::tunnel::TUNNEL_DATA_ENCRYPTED_SIZE, out + 16); // data
-			m_IVDecryption.Decrypt ((ChipherBlock *)out, (ChipherBlock *)out); // double iv
-		}
+		uint8_t iv[16];
+		m_IVDecryption.Decrypt (in, iv); // iv
+		m_LayerDecryption.Decrypt (in + 16, i2p::tunnel::TUNNEL_DATA_ENCRYPTED_SIZE, iv, out + 16); // data
+		m_IVDecryption.Decrypt (iv, out); // double iv
 	}
 
 // AEAD/ChaCha20/Poly1305
 
-	bool AEADChaCha20Poly1305 (const uint8_t * msg, size_t msgLen, const uint8_t * ad, size_t adLen, const uint8_t * key, const uint8_t * nonce, uint8_t * buf, size_t len, bool encrypt)
+	static bool AEADChaCha20Poly1305 (EVP_CIPHER_CTX * ctx, const uint8_t * msg, size_t msgLen, 
+		const uint8_t * ad, size_t adLen, const uint8_t * key, const uint8_t * nonce, uint8_t * buf, size_t len, bool encrypt)
 	{
-		if (len < msgLen) return false;
+		if (!ctx || len < msgLen) return false;
 		if (encrypt && len < msgLen + 16) return false;
 		bool ret = true;
-#if OPENSSL_AEAD_CHACHA20_POLY1305
 		int outlen = 0;
-		EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new ();
 		if (encrypt)
 		{
 			EVP_EncryptInit_ex(ctx, EVP_chacha20_poly1305(), 0, 0, 0);
@@ -1109,11 +629,20 @@ namespace crypto
 			EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce);
 			EVP_EncryptUpdate(ctx, NULL, &outlen, ad, adLen);
 			EVP_EncryptUpdate(ctx, buf, &outlen, msg, msgLen);
-			EVP_EncryptFinal_ex(ctx, buf, &outlen);
+			EVP_EncryptFinal_ex(ctx, buf + outlen, &outlen);
 			EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, 16, buf + msgLen);
 		}
 		else
 		{
+#if defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x4000000fL
+			std::vector<uint8_t> m(msgLen + 16);
+			if (msg == buf)
+			{	
+				// we have to use different buffers otherwise verification fails
+				memcpy (m.data (), msg, msgLen + 16);
+				msg = m.data ();
+			}	
+#endif			
 			EVP_DecryptInit_ex(ctx, EVP_chacha20_poly1305(), 0, 0, 0);
 			EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, 12, 0);
 			EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, 16, (uint8_t *)(msg + msgLen));
@@ -1122,140 +651,100 @@ namespace crypto
 			EVP_DecryptUpdate(ctx, buf, &outlen, msg, msgLen);
 			ret = EVP_DecryptFinal_ex(ctx, buf + outlen, &outlen) > 0;
 		}
-
-		EVP_CIPHER_CTX_free (ctx);
-#else
-		chacha::Chacha20State state;
-		// generate one time poly key
-		chacha::Chacha20Init (state, nonce, key, 0);
-		uint64_t polyKey[8];
-		memset(polyKey, 0, sizeof(polyKey));
-		chacha::Chacha20Encrypt (state, (uint8_t *)polyKey, 64);
-		// create Poly1305 hash
-		Poly1305 polyHash (polyKey);
-		if (!ad) adLen = 0;
-		uint8_t padding[16]; memset (padding, 0, 16);
-		if (ad)
-		{
-			polyHash.Update (ad, adLen);// additional authenticated data
-			auto rem = adLen & 0x0F; // %16
-			if (rem)
-			{
-				// padding1
-				rem = 16 - rem;
-				polyHash.Update (padding, rem);
-			}
-		}
-		// encrypt/decrypt data and add to hash
-		Chacha20SetCounter (state, 1);
-		if (buf != msg)
-			memcpy (buf, msg, msgLen);
-		if (encrypt)
-		{
-			chacha::Chacha20Encrypt (state, buf, msgLen); // encrypt
-			polyHash.Update (buf, msgLen); // after encryption
-		}
-		else
-		{
-			polyHash.Update (buf, msgLen); // before decryption
-			chacha::Chacha20Encrypt (state, buf, msgLen); // decrypt
-		}
-
-		auto rem = msgLen & 0x0F; // %16
-		if (rem)
-		{
-			// padding2
-			rem = 16 - rem;
-			polyHash.Update (padding, rem);
-		}
-		// adLen and msgLen
-		htole64buf (padding, adLen);
-		htole64buf (padding + 8, msgLen);
-		polyHash.Update (padding, 16);
-
-		if (encrypt)
-			// calculate Poly1305 tag and write in after encrypted data
-			polyHash.Finish ((uint64_t *)(buf + msgLen));
-		else
-		{
-			uint64_t tag[4];
-			// calculate Poly1305 tag
-			polyHash.Finish (tag);
-			if (memcmp (tag, msg + msgLen, 16)) ret = false; // compare with provided
-		}
-#endif
 		return ret;
 	}
 
-	void AEADChaCha20Poly1305Encrypt (const std::vector<std::pair<uint8_t *, size_t> >& bufs, const uint8_t * key, const uint8_t * nonce, uint8_t * mac)
+	bool AEADChaCha20Poly1305 (const uint8_t * msg, size_t msgLen, const uint8_t * ad, size_t adLen, 
+		const uint8_t * key, const uint8_t * nonce, uint8_t * buf, size_t len, bool encrypt)
 	{
-		if (bufs.empty ()) return;
-#if OPENSSL_AEAD_CHACHA20_POLY1305
-		int outlen = 0;
-		EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new ();
-		EVP_EncryptInit_ex(ctx, EVP_chacha20_poly1305(), 0, 0, 0);
-		EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, 12, 0);
-		EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce);
-		for (const auto& it: bufs)
-			EVP_EncryptUpdate(ctx, it.first, &outlen, it.first, it.second);
-		EVP_EncryptFinal_ex(ctx, NULL, &outlen);
-		EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, 16, mac);
+		EVP_CIPHER_CTX * ctx = EVP_CIPHER_CTX_new ();
+		auto ret = AEADChaCha20Poly1305 (ctx, msg, msgLen, ad, adLen, key, nonce, buf, len, encrypt);
 		EVP_CIPHER_CTX_free (ctx);
-#else
-		chacha::Chacha20State state;
-		// generate one time poly key
-		chacha::Chacha20Init (state, nonce, key, 0);
-		uint64_t polyKey[8];
-		memset(polyKey, 0, sizeof(polyKey));
-		chacha::Chacha20Encrypt (state, (uint8_t *)polyKey, 64);
-		Poly1305 polyHash (polyKey);
-		// encrypt buffers
-		Chacha20SetCounter (state, 1);
-		size_t size = 0;
-		for (const auto& it: bufs)
-		{
-			chacha::Chacha20Encrypt (state, it.first, it.second);
-			polyHash.Update (it.first, it.second); // after encryption
-			size += it.second;
-		}
-		// padding
-		uint8_t padding[16];
-		memset (padding, 0, 16);
-		auto rem = size & 0x0F; // %16
-		if (rem)
-		{
-			// padding2
-			rem = 16 - rem;
-			polyHash.Update (padding, rem);
-		}
-		// adLen and msgLen
-		// adLen is always zero
-		htole64buf (padding + 8, size);
-		polyHash.Update (padding, 16);
-		// MAC
-		polyHash.Finish ((uint64_t *)mac);
-#endif
+		return ret;
 	}
 
-	void ChaCha20 (const uint8_t * msg, size_t msgLen, const uint8_t * key, const uint8_t * nonce, uint8_t * out)
+	AEADChaCha20Poly1305Encryptor::AEADChaCha20Poly1305Encryptor ()
 	{
-#if OPENSSL_AEAD_CHACHA20_POLY1305
-		EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new ();
+		m_Ctx = EVP_CIPHER_CTX_new ();
+	}
+	
+	AEADChaCha20Poly1305Encryptor::~AEADChaCha20Poly1305Encryptor ()
+	{
+		if (m_Ctx)
+			EVP_CIPHER_CTX_free (m_Ctx);
+	}	
+
+	bool AEADChaCha20Poly1305Encryptor::Encrypt (const uint8_t * msg, size_t msgLen, const uint8_t * ad, size_t adLen,
+		const uint8_t * key, const uint8_t * nonce, uint8_t * buf, size_t len)
+	{
+		return AEADChaCha20Poly1305 (m_Ctx, msg, msgLen, ad, adLen, key, nonce, buf, len, true);
+	}	
+
+	void AEADChaCha20Poly1305Encryptor::Encrypt (const std::vector<std::pair<uint8_t *, size_t> >& bufs, 
+		const uint8_t * key, const uint8_t * nonce, uint8_t * mac)
+	{
+		if (bufs.empty ()) return;
+		int outlen = 0;
+		EVP_EncryptInit_ex(m_Ctx, EVP_chacha20_poly1305(), 0, 0, 0);
+		EVP_CIPHER_CTX_ctrl(m_Ctx, EVP_CTRL_AEAD_SET_IVLEN, 12, 0);
+		EVP_EncryptInit_ex(m_Ctx, NULL, NULL, key, nonce);
+		for (const auto& it: bufs)
+			EVP_EncryptUpdate(m_Ctx, it.first, &outlen, it.first, it.second);
+		EVP_EncryptFinal_ex(m_Ctx, NULL, &outlen);
+		EVP_CIPHER_CTX_ctrl(m_Ctx, EVP_CTRL_AEAD_GET_TAG, 16, mac);
+	}	
+	
+	AEADChaCha20Poly1305Decryptor::AEADChaCha20Poly1305Decryptor ()
+	{
+		m_Ctx = EVP_CIPHER_CTX_new ();
+	}
+	
+	AEADChaCha20Poly1305Decryptor::~AEADChaCha20Poly1305Decryptor ()
+	{
+		if (m_Ctx)
+			EVP_CIPHER_CTX_free (m_Ctx);
+	}	
+
+	bool AEADChaCha20Poly1305Decryptor::Decrypt (const uint8_t * msg, size_t msgLen, const uint8_t * ad, size_t adLen,
+		const uint8_t * key, const uint8_t * nonce, uint8_t * buf, size_t len)
+	{
+		return AEADChaCha20Poly1305 (m_Ctx, msg, msgLen, ad, adLen, key, nonce, buf, len, false);
+	}
+
+	static void ChaCha20 (EVP_CIPHER_CTX *ctx, const uint8_t * msg, size_t msgLen, const uint8_t * key, const uint8_t * nonce, uint8_t * out)
+	{
 		uint32_t iv[4];
 		iv[0] = htole32 (1); memcpy (iv + 1, nonce, 12); // counter | nonce
 		EVP_EncryptInit_ex(ctx, EVP_chacha20 (), NULL, key, (const uint8_t *)iv);
 		int outlen = 0;
 		EVP_EncryptUpdate(ctx, out, &outlen, msg, msgLen);
 		EVP_EncryptFinal_ex(ctx, NULL, &outlen);
+	}
+	
+	void ChaCha20 (const uint8_t * msg, size_t msgLen, const uint8_t * key, const uint8_t * nonce, uint8_t * out)
+	{
+		EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new ();
+		ChaCha20 (ctx, msg, msgLen, key, nonce, out);
 		EVP_CIPHER_CTX_free (ctx);
-#else
-		chacha::Chacha20State state;
-		chacha::Chacha20Init (state, nonce, key, 1);
-		if (out != msg) memcpy (out, msg, msgLen);
-		chacha::Chacha20Encrypt (state, out, msgLen);
-#endif
 	}
 
+	
+	ChaCha20Context::ChaCha20Context ()
+	{
+		m_Ctx = EVP_CIPHER_CTX_new ();
+	}
+	
+	ChaCha20Context::~ChaCha20Context ()
+	{
+		if (m_Ctx)
+			EVP_CIPHER_CTX_free (m_Ctx);
+	}
+	
+	void ChaCha20Context::operator ()(const uint8_t * msg, size_t msgLen, const uint8_t * key, const uint8_t * nonce, uint8_t * out)
+	{
+		ChaCha20 (m_Ctx, msg, msgLen, key, nonce, out);
+	}	
+	
 	void HKDF (const uint8_t * salt, const uint8_t * key, size_t keyLen, const std::string& info,
 		uint8_t * out, size_t outLen)
 	{
@@ -1313,8 +802,8 @@ namespace crypto
 		for (const auto& it: bufs)
 			SHA256_Update (&ctx, it.first, it.second);
 		SHA256_Final (m_H, &ctx);
-	}	
-	
+	}
+
 	void NoiseSymmetricState::MixKey (const uint8_t * sharedSecret)
 	{
 		HKDF (m_CK, sharedSecret, 32, "", m_CK);
@@ -1330,7 +819,7 @@ namespace crypto
 		SHA256_Init (&ctx);
 		SHA256_Update (&ctx, hh, 32);
 		SHA256_Update (&ctx, pub, 32);
-		SHA256_Final (state.m_H, &ctx);  // h = MixHash(pub) = SHA256(hh || pub)
+		SHA256_Final (state.m_H, &ctx); // h = MixHash(pub) = SHA256(hh || pub)
 	}
 
 	void InitNoiseNState (NoiseSymmetricState& state, const uint8_t * pub)
@@ -1368,12 +857,12 @@ namespace crypto
 		}; // SHA256 ("Noise_XKchaobfse+hs1+hs2+hs3_25519_ChaChaPoly_SHA256")
 		static const uint8_t hh[32] =
 		{
-			0xdc, 0x85, 0xe6, 0xaf, 0x7b, 0x02, 0x65, 0x0c, 0xf1, 0xf9, 0x0d, 0x71, 0xfb, 0xc6, 0xd4, 0x53, 
+			0xdc, 0x85, 0xe6, 0xaf, 0x7b, 0x02, 0x65, 0x0c, 0xf1, 0xf9, 0x0d, 0x71, 0xfb, 0xc6, 0xd4, 0x53,
 			0xa7, 0xcf, 0x6d, 0xbf, 0xbd, 0x52, 0x5e, 0xa5, 0xb5, 0x79, 0x1c, 0x47, 0xb3, 0x5e, 0xbc, 0x33
 		}; // SHA256 (protocolNameHash)
 		InitNoiseState (state, protocolNameHash, hh, pub);
 	}
-	
+
 	void InitNoiseIKState (NoiseSymmetricState& state, const uint8_t * pub)
 	{
 		static const uint8_t protocolNameHash[32] =
@@ -1403,19 +892,15 @@ namespace crypto
 		}
 	}*/
 
-	void InitCrypto (bool precomputation, bool aesni, bool avx, bool force)
+	void InitCrypto (bool precomputation)
 	{
-		i2p::cpu::Detect (aesni, avx, force);
-#if LEGACY_OPENSSL
-		SSL_library_init ();
-#endif
 /*		auto numLocks = CRYPTO_num_locks();
 		for (int i = 0; i < numLocks; i++)
 			m_OpenSSLMutexes.emplace_back (new std::mutex);
 		CRYPTO_set_locking_callback (OpensslLockingCallback);*/
 		if (precomputation)
 		{
-#if defined(__x86_64__)
+#if IS_X86_64
 			g_ElggTable = new BIGNUM * [ELGAMAL_FULL_EXPONENT_NUM_BYTES][255];
 			PrecalculateElggTable (g_ElggTable, ELGAMAL_FULL_EXPONENT_NUM_BYTES);
 #else
@@ -1430,7 +915,7 @@ namespace crypto
 		if (g_ElggTable)
 		{
 			DestroyElggTable (g_ElggTable,
-#if defined(__x86_64__)
+#if IS_X86_64
 				ELGAMAL_FULL_EXPONENT_NUM_BYTES
 #else
 				ELGAMAL_SHORT_EXPONENT_NUM_BYTES

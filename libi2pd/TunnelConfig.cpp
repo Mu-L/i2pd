@@ -79,8 +79,7 @@ namespace tunnel
 		uint8_t * record = records + index*TUNNEL_BUILD_RECORD_SIZE;
 		i2p::crypto::CBCDecryption decryption;
 		decryption.SetKey (replyKey);
-		decryption.SetIV (replyIV);
-		decryption.Decrypt(record, TUNNEL_BUILD_RECORD_SIZE, record);
+		decryption.Decrypt(record, TUNNEL_BUILD_RECORD_SIZE, replyIV, record);
 	}
 
 	void ECIESTunnelHopConfig::EncryptECIES (const uint8_t * plainText, size_t len, uint8_t * encrypted)
@@ -167,7 +166,7 @@ namespace tunnel
 		memset (clearText + SHORT_REQUEST_RECORD_MORE_FLAGS_OFFSET, 0, 2);
 		clearText[SHORT_REQUEST_RECORD_LAYER_ENCRYPTION_TYPE] = 0; // AES
 		htobe32buf (clearText + SHORT_REQUEST_RECORD_REQUEST_TIME_OFFSET, i2p::util::GetMinutesSinceEpoch ());
-        htobe32buf (clearText + SHORT_REQUEST_RECORD_REQUEST_EXPIRATION_OFFSET , 600); // +10 minutes
+		htobe32buf (clearText + SHORT_REQUEST_RECORD_REQUEST_EXPIRATION_OFFSET , 600); // +10 minutes
 		htobe32buf (clearText + SHORT_REQUEST_RECORD_SEND_MSG_ID_OFFSET, replyMsgID);
 		memset (clearText + SHORT_REQUEST_RECORD_PADDING_OFFSET, 0, SHORT_REQUEST_RECORD_CLEAR_TEXT_SIZE - SHORT_REQUEST_RECORD_PADDING_OFFSET);
 		// encrypt
